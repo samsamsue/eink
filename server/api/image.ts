@@ -1,7 +1,11 @@
 /// <reference path="../../types/lunar-javascript.d.ts" />
+/// <reference path="../../types/opentype-js.d.ts" />
 
+import { existsSync, readFileSync } from 'fs'
+import { join } from 'path'
 import type { CanvasRenderingContext2D } from 'canvas'
 import type { ServerResponse } from 'http'
+import opentype from 'opentype.js'
 import { Solar } from 'lunar-javascript'
 
 const DESIGN_WIDTH = 800
@@ -10,6 +14,18 @@ const SCALE = 0.5
 const WIDTH = DESIGN_WIDTH * SCALE
 const HEIGHT = DESIGN_HEIGHT * SCALE
 const FONT_FAMILY = 'sans-serif'
+const fontPath = [
+  join(process.cwd(), 'public/fonts/DroidSansFallbackFull.ttf'),
+  join(process.cwd(), '.output/public/fonts/DroidSansFallbackFull.ttf'),
+  '/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf',
+].find((candidate) => existsSync(candidate))
+const fontBuffer = fontPath ? readFileSync(fontPath) : null
+const pathFont = fontBuffer
+  ? opentype.parse(fontBuffer.buffer.slice(
+      fontBuffer.byteOffset,
+      fontBuffer.byteOffset + fontBuffer.byteLength,
+    ))
+  : null
 
 let canvasModulePromise: Promise<typeof import('canvas')> | null = null
 
@@ -568,6 +584,25 @@ const setFont = (
   ctx.font = `${weight} ${size}px ${FONT_FAMILY}`
 }
 
+const getFontSize = (ctx: CanvasRenderingContext2D) => (
+  Number(ctx.font.match(/(\d+(?:\.\d+)?)px/)?.[1] || 16)
+)
+
+const shouldDrawWithPath = (char: string) => /[\p{Script=Han}，。、：；！？（）《》“”‘’]/u.test(char)
+
+const measureDisplayText = (
+  ctx: CanvasRenderingContext2D,
+  text: string,
+) => {
+  const size = getFontSize(ctx)
+
+  return Array.from(text).reduce((width, char) => (
+    width + (pathFont && shouldDrawWithPath(char)
+      ? pathFont.getAdvanceWidth(char, size)
+      : ctx.measureText(char).width)
+  ), 0)
+}
+
 const drawBoldText = (
   ctx: CanvasRenderingContext2D,
   text: string,
@@ -575,7 +610,33 @@ const drawBoldText = (
   y: number,
   _strokeWidth = 0,
 ) => {
-  ctx.fillText(text, x, y)
+  const size = getFontSize(ctx)
+  const measuredWidth = measureDisplayText(ctx, text)
+  const drawX = ctx.textAlign === 'right'
+    ? x - measuredWidth
+    : ctx.textAlign === 'center'
+      ? x - measuredWidth / 2
+      : x
+  const drawY = ctx.textBaseline === 'middle' ? y + size * 0.36 : y
+  const originalTextAlign = ctx.textAlign
+  let cursorX = drawX
+
+  ctx.textAlign = 'left'
+
+  for (const char of Array.from(text)) {
+    if (pathFont && shouldDrawWithPath(char)) {
+      const path = pathFont.getPath(char, cursorX, drawY, size)
+
+      path.fill = String(ctx.fillStyle)
+      path.draw(ctx)
+      cursorX += pathFont.getAdvanceWidth(char, size)
+    } else {
+      ctx.fillText(char, cursorX, y)
+      cursorX += ctx.measureText(char).width
+    }
+  }
+
+  ctx.textAlign = originalTextAlign
 }
 
 const ellipsizeText = (
@@ -583,13 +644,15 @@ const ellipsizeText = (
   text: string,
   maxWidth: number,
 ) => {
-  if (ctx.measureText(text).width <= maxWidth) {
+  const measureText = (value: string) => measureDisplayText(ctx, value)
+
+  if (measureText(text) <= maxWidth) {
     return text
   }
 
   let output = text
 
-  while (output.length > 0 && ctx.measureText(`${output}...`).width > maxWidth) {
+  while (output.length > 0 && measureText(`${output}...`) > maxWidth) {
     output = output.slice(0, -1)
   }
 
