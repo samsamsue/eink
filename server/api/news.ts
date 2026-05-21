@@ -27,6 +27,7 @@ const add = async (title: string)=> {
         },
         body: JSON.stringify({
             title,
+            deviceId: env.DEVICEID
         })
     })
 }
@@ -42,10 +43,20 @@ const del = async (id: number)=> {
 }
 
 export default defineEventHandler(async (event) => {
-    //获取.env的APIKEY
+
+    if(env.PW){
+        //获取get请求的参数pw
+        const query = getQuery(event)
+        if(query.pw !== env.PW){
+            throw createError({
+                statusCode: 401,
+                statusMessage: 'Unauthorized'
+            })
+        }
+    }
+
 
     const params = new URLSearchParams({
-        status:0+'',
         deviceId: env.DEVICEID,
     })
 
@@ -65,12 +76,11 @@ export default defineEventHandler(async (event) => {
     })
     const weibo = await weiboRes.json()
 
-    //根据num排序
     weibo.data.band_list.slice(0, 10).forEach(async (item: any, index: number) => {
         const title =  (item.label_name || '新') + ' | ' + item.word
         if( index < todoList.length - 1) {
             await update(todoList[index].id, title)
-        }else {
+        }else if(index < 9) {
             await add(title)
         }
     })
@@ -84,7 +94,7 @@ export default defineEventHandler(async (event) => {
 
 
     return {
-        completed: true
+        completed: true,
     }
 
 })

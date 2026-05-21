@@ -5,6 +5,7 @@ export default defineNuxtConfig({
   devtools: { enabled: true },
   runtimeConfig:{
     APIKEY: process.env.APIKEY,
-    DEVICEID: process.env.DEVICEID
+    DEVICEID: process.env.DEVICEID,
+    PW: process.env.PW
   }
 })
