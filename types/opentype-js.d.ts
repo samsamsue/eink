@@ -24,6 +24,7 @@ declare module 'opentype.js' {
 
   type FontPath = {
     fill: string
+    commands: unknown[]
     draw: (ctx: DrawContext) => void
   }
 

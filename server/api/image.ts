@@ -27,6 +27,7 @@ const latinFontPath = [
 let cjkPathFont: ReturnType<typeof opentype.parse> | null = null
 let latinPathFont: ReturnType<typeof opentype.parse> | null = null
 let pathFontLoaded = false
+let fontLoadSource = 'none'
 
 const parseFontBuffer = (buffer: Buffer) => opentype.parse(buffer.buffer.slice(
   buffer.byteOffset,
@@ -48,10 +49,12 @@ const getPathFont = async () => {
 
     if (cjkAsset) {
       cjkPathFont = parseFontBuffer(Buffer.from(cjkAsset))
+      fontLoadSource = 'server-assets'
     }
 
     if (latinAsset) {
       latinPathFont = parseFontBuffer(Buffer.from(latinAsset))
+      fontLoadSource = 'server-assets'
     }
 
     if (cjkPathFont || latinPathFont) {
@@ -63,14 +66,28 @@ const getPathFont = async () => {
 
   if (cjkFontPath) {
     cjkPathFont = parseFontBuffer(readFileSync(cjkFontPath))
+    fontLoadSource = 'filesystem'
   }
 
   if (latinFontPath) {
     latinPathFont = parseFontBuffer(readFileSync(latinFontPath))
+    fontLoadSource = 'filesystem'
   }
 
   return { cjkPathFont, latinPathFont }
 }
+
+const getFontDebug = () => ({
+  source: fontLoadSource,
+  cjkPath: cjkFontPath || null,
+  latinPath: latinFontPath || null,
+  cjkLoaded: Boolean(cjkPathFont),
+  latinLoaded: Boolean(latinPathFont),
+  cjkProbeWidth: cjkPathFont?.getAdvanceWidth('测试中文', 40) || 0,
+  latinProbeWidth: latinPathFont?.getAdvanceWidth('ABC123', 40) || 0,
+  cjkProbePathCommands: cjkPathFont?.getPath('测', 0, 40, 40).commands.length || 0,
+  latinProbePathCommands: latinPathFont?.getPath('A', 0, 40, 40).commands.length || 0,
+})
 
 let canvasModulePromise: Promise<typeof import('canvas')> | null = null
 
@@ -836,6 +853,15 @@ export default defineEventHandler(async (event) => {
   const preview = query.preview === ''
     || query.preview === '1'
     || query.preview === 'true'
+  const debug = query.debug === ''
+    || query.debug === '1'
+    || query.debug === 'true'
+  const fontTest = query.fontTest === ''
+    || query.fontTest === '1'
+    || query.fontTest === 'true'
+  const noPush = query.noPush === ''
+    || query.noPush === '1'
+    || query.noPush === 'true'
   const pushOptions = {
     dither: typeof query.dither === 'string' ? query.dither : undefined,
     pageId: typeof query.pageId === 'string' ? query.pageId : undefined,
@@ -847,6 +873,14 @@ export default defineEventHandler(async (event) => {
   ])
   const { createCanvas } = await getCanvasModule()
   await getPathFont()
+
+  if (debug) {
+    return {
+      completed: true,
+      font: getFontDebug(),
+    }
+  }
+
   const realtimeDate = getRealtimeDate()
   const nextObservance = getNextObservance()
   const almanac = getRealtimeAlmanac()
@@ -858,6 +892,23 @@ export default defineEventHandler(async (event) => {
   ctx.scale(SCALE, SCALE)
   ctx.fillStyle = '#f4f4f4'
   ctx.fillRect(0, 0, DESIGN_WIDTH, DESIGN_HEIGHT)
+
+  if (fontTest) {
+    ctx.fillStyle = '#000'
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'alphabetic'
+    setFont(ctx, 64, 'bold')
+    drawBoldText(ctx, '中文测试 ABC123 Debian 25°C', 30, 120)
+    setFont(ctx, 42, 'bold')
+    drawBoldText(ctx, `font: ${getFontDebug().source}`, 30, 200)
+
+    const buffer = canvas.toBuffer('image/png')
+    const res = event.node.res as ServerResponse
+    res.setHeader('Content-Type', 'image/png')
+    res.setHeader('Content-Length', buffer.length)
+    res.end(buffer)
+    return
+  }
 
   // Header.
   await drawWeatherIcon(ctx, weather)
@@ -918,18 +969,21 @@ export default defineEventHandler(async (event) => {
   }
 
   const buffer = canvas.toBuffer('image/png')
-  await pushImageToDevice(buffer, pushOptions)
+  if (!noPush) {
+    await pushImageToDevice(buffer, pushOptions)
+  }
 
   if (!preview) {
     return {
       completed: true,
-      pushed: true,
+      pushed: !noPush,
+      font: getFontDebug(),
     }
   }
 
   const res = event.node.res as ServerResponse
   res.setHeader('Content-Type', 'image/png')
-  res.setHeader('X-Zectrix-Pushed', 'true')
+  res.setHeader('X-Zectrix-Pushed', String(!noPush))
   res.setHeader('Content-Length', buffer.length)
   res.end(buffer)
 })
