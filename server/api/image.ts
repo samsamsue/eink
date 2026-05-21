@@ -14,18 +14,63 @@ const SCALE = 0.5
 const WIDTH = DESIGN_WIDTH * SCALE
 const HEIGHT = DESIGN_HEIGHT * SCALE
 const FONT_FAMILY = 'sans-serif'
-const fontPath = [
+const cjkFontPath = [
   join(process.cwd(), 'public/fonts/DroidSansFallbackFull.ttf'),
   join(process.cwd(), '.output/public/fonts/DroidSansFallbackFull.ttf'),
   '/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf',
 ].find((candidate) => existsSync(candidate))
-const fontBuffer = fontPath ? readFileSync(fontPath) : null
-const pathFont = fontBuffer
-  ? opentype.parse(fontBuffer.buffer.slice(
-      fontBuffer.byteOffset,
-      fontBuffer.byteOffset + fontBuffer.byteLength,
-    ))
-  : null
+const latinFontPath = [
+  join(process.cwd(), 'public/fonts/DejaVuSans-Bold.ttf'),
+  join(process.cwd(), '.output/public/fonts/DejaVuSans-Bold.ttf'),
+  '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+].find((candidate) => existsSync(candidate))
+let cjkPathFont: ReturnType<typeof opentype.parse> | null = null
+let latinPathFont: ReturnType<typeof opentype.parse> | null = null
+let pathFontLoaded = false
+
+const parseFontBuffer = (buffer: Buffer) => opentype.parse(buffer.buffer.slice(
+  buffer.byteOffset,
+  buffer.byteOffset + buffer.byteLength,
+))
+
+const getPathFont = async () => {
+  if (pathFontLoaded) {
+    return { cjkPathFont, latinPathFont }
+  }
+
+  pathFontLoaded = true
+
+  try {
+    const [cjkAsset, latinAsset] = await Promise.all([
+      useStorage('assets:fonts').getItemRaw('DroidSansFallbackFull.ttf'),
+      useStorage('assets:fonts').getItemRaw('DejaVuSans-Bold.ttf'),
+    ])
+
+    if (cjkAsset) {
+      cjkPathFont = parseFontBuffer(Buffer.from(cjkAsset))
+    }
+
+    if (latinAsset) {
+      latinPathFont = parseFontBuffer(Buffer.from(latinAsset))
+    }
+
+    if (cjkPathFont || latinPathFont) {
+      return { cjkPathFont, latinPathFont }
+    }
+  } catch {
+    // Fall through to local filesystem paths for local development.
+  }
+
+  if (cjkFontPath) {
+    cjkPathFont = parseFontBuffer(readFileSync(cjkFontPath))
+  }
+
+  if (latinFontPath) {
+    latinPathFont = parseFontBuffer(readFileSync(latinFontPath))
+  }
+
+  return { cjkPathFont, latinPathFont }
+}
 
 let canvasModulePromise: Promise<typeof import('canvas')> | null = null
 
@@ -589,6 +634,9 @@ const getFontSize = (ctx: CanvasRenderingContext2D) => (
 )
 
 const shouldDrawWithPath = (char: string) => /[\p{Script=Han}，。、：；！？（）《》“”‘’]/u.test(char)
+const getTextFont = (char: string) => (
+  shouldDrawWithPath(char) ? cjkPathFont : latinPathFont
+)
 
 const measureDisplayText = (
   ctx: CanvasRenderingContext2D,
@@ -597,9 +645,7 @@ const measureDisplayText = (
   const size = getFontSize(ctx)
 
   return Array.from(text).reduce((width, char) => (
-    width + (pathFont && shouldDrawWithPath(char)
-      ? pathFont.getAdvanceWidth(char, size)
-      : ctx.measureText(char).width)
+    width + (getTextFont(char)?.getAdvanceWidth(char, size) || ctx.measureText(char).width)
   ), 0)
 }
 
@@ -624,12 +670,14 @@ const drawBoldText = (
   ctx.textAlign = 'left'
 
   for (const char of Array.from(text)) {
-    if (pathFont && shouldDrawWithPath(char)) {
-      const path = pathFont.getPath(char, cursorX, drawY, size)
+    const font = getTextFont(char)
+
+    if (font) {
+      const path = font.getPath(char, cursorX, drawY, size)
 
       path.fill = String(ctx.fillStyle)
       path.draw(ctx)
-      cursorX += pathFont.getAdvanceWidth(char, size)
+      cursorX += font.getAdvanceWidth(char, size)
     } else {
       ctx.fillText(char, cursorX, y)
       cursorX += ctx.measureText(char).width
@@ -798,6 +846,7 @@ export default defineEventHandler(async (event) => {
     fetchTodoTip(),
   ])
   const { createCanvas } = await getCanvasModule()
+  await getPathFont()
   const realtimeDate = getRealtimeDate()
   const nextObservance = getNextObservance()
   const almanac = getRealtimeAlmanac()
