@@ -76,14 +76,17 @@ export default defineEventHandler(async (event) => {
     })
     const weibo = await weiboRes.json()
 
-    weibo.data.band_list.slice(0, 10).forEach(async (item: any, index: number) => {
-        const title =  (item.label_name || '新') + ' | ' + item.word
-        if( index < todoList.length - 1) {
-            await update(todoList[index].id, title)
-        }else if(index < 9) {
-            await add(title)
-        }
-    })
+    //过滤广告
+    weibo.data.band_list
+        .filter((item: any) => !item.ad_channel)
+        .slice(0, 10).forEach(async (item: any, index: number) => {
+            const title =  (item.label_name || '新') + ' | ' + item.word
+            if( index < todoList.length - 1) {
+                await update(todoList[index].id, title)
+            }else if(index < 9) {
+                await add(title)
+            }
+        })
 
     if(todoList.length > 10) {
         // 删除10后的
