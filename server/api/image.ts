@@ -1,22 +1,5 @@
 /// <reference path="../../types/lunar-javascript.d.ts" />
 
-import { existsSync } from 'fs'
-import { join } from 'path'
-
-const fontConfigPath = [
-  join(process.cwd(), 'public/fontconfig/fonts.conf'),
-  join(process.cwd(), '.output/public/fontconfig/fonts.conf'),
-  join(process.cwd(), 'fontconfig/fonts.conf'),
-].find((configPath) => existsSync(configPath))
-
-if (!process.env.FONTCONFIG_FILE && fontConfigPath) {
-  process.env.FONTCONFIG_FILE = fontConfigPath
-}
-
-if (!process.env.FONTCONFIG_PATH && fontConfigPath) {
-  process.env.FONTCONFIG_PATH = join(fontConfigPath, '..')
-}
-
 import type { CanvasRenderingContext2D } from 'canvas'
 import type { ServerResponse } from 'http'
 import { Solar } from 'lunar-javascript'
@@ -26,34 +9,13 @@ const DESIGN_HEIGHT = 600
 const SCALE = 0.5
 const WIDTH = DESIGN_WIDTH * SCALE
 const HEIGHT = DESIGN_HEIGHT * SCALE
-const FONT_FAMILY = '"Eink Sans", "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", "Heiti SC", Arial, sans-serif'
-
-const publicFontPath = join(process.cwd(), 'public/fonts/DroidSansFallbackFull.ttf')
-const outputPublicFontPath = join(process.cwd(), '.output/public/fonts/DroidSansFallbackFull.ttf')
-const bundledFontPath = join(process.cwd(), 'assets/fonts/DroidSansFallbackFull.ttf')
-const systemFontPath = '/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf'
-const fallbackFontPath = [
-  publicFontPath,
-  outputPublicFontPath,
-  bundledFontPath,
-  systemFontPath,
-].find((fontPath) => existsSync(fontPath))
+const FONT_FAMILY = 'sans-serif'
 
 let canvasModulePromise: Promise<typeof import('canvas')> | null = null
-let fontRegistered = false
 
 const getCanvasModule = async () => {
   canvasModulePromise ||= import('canvas')
-  const canvasModule = await canvasModulePromise
-
-  if (!fontRegistered && fallbackFontPath) {
-    canvasModule.registerFont(fallbackFontPath, {
-      family: 'Eink Sans',
-    })
-    fontRegistered = true
-  }
-
-  return canvasModule
+  return canvasModulePromise
 }
 
 type HotItem = {
@@ -611,15 +573,8 @@ const drawBoldText = (
   text: string,
   x: number,
   y: number,
-  strokeWidth = 0.75,
+  _strokeWidth = 0,
 ) => {
-  if (strokeWidth > 0) {
-    ctx.lineJoin = 'round'
-    ctx.miterLimit = 2
-    ctx.lineWidth = strokeWidth
-    ctx.strokeText(text, x, y)
-  }
-
   ctx.fillText(text, x, y)
 }
 
@@ -701,8 +656,8 @@ const drawAlmanac = (
   ctx.textAlign = 'left'
   ctx.textBaseline = 'middle'
   setFont(ctx, 24, 'bold')
-  drawBoldText(ctx, ellipsizeText(ctx, `宜：${almanac.yi.join('、')}`, 262), 260, 48, 0.55)
-  drawBoldText(ctx, ellipsizeText(ctx, `忌：${almanac.ji.join('、')}`, 262), 260, 83, 0.55)
+  drawBoldText(ctx, ellipsizeText(ctx, `宜：${almanac.yi.join('、')}`, 262), 260, 48)
+  drawBoldText(ctx, ellipsizeText(ctx, `忌：${almanac.ji.join('、')}`, 262), 260, 83)
 
   ctx.restore()
 }
@@ -744,13 +699,13 @@ const drawHotItem = (
   setFont(ctx, 27, 'bold')
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  drawBoldText(ctx, tag, 44.5, centerY, 0.8)
+  drawBoldText(ctx, tag, 44.5, centerY)
 
   ctx.fillStyle = '#000'
   setFont(ctx, 30, 'bold')
   ctx.textAlign = 'left'
   ctx.textBaseline = 'middle'
-  drawBoldText(ctx, title, 77, centerY, 0.65)
+  drawBoldText(ctx, title, 77, centerY)
 }
 
 export default defineEventHandler(async (event) => {
@@ -847,7 +802,7 @@ export default defineEventHandler(async (event) => {
     setFont(ctx, 31, 'bold')
     ctx.textAlign = 'left'
     ctx.textBaseline = 'middle'
-    drawBoldText(ctx, ellipsizeText(ctx, todoTip, 360), 405, 552.5, 0.65)
+    drawBoldText(ctx, ellipsizeText(ctx, todoTip, 360), 405, 552.5)
   }
 
   const buffer = canvas.toBuffer('image/png')
