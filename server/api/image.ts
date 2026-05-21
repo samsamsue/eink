@@ -13,7 +13,11 @@ if (!process.env.FONTCONFIG_FILE && fontConfigPath) {
   process.env.FONTCONFIG_FILE = fontConfigPath
 }
 
-import { createCanvas, loadImage, registerFont, type CanvasRenderingContext2D } from 'canvas'
+if (!process.env.FONTCONFIG_PATH && fontConfigPath) {
+  process.env.FONTCONFIG_PATH = join(fontConfigPath, '..')
+}
+
+import type { CanvasRenderingContext2D } from 'canvas'
 import type { ServerResponse } from 'http'
 import { Solar } from 'lunar-javascript'
 
@@ -35,10 +39,21 @@ const fallbackFontPath = [
   systemFontPath,
 ].find((fontPath) => existsSync(fontPath))
 
-if (fallbackFontPath) {
-  registerFont(fallbackFontPath, {
-    family: 'Eink Sans',
-  })
+let canvasModulePromise: Promise<typeof import('canvas')> | null = null
+let fontRegistered = false
+
+const getCanvasModule = async () => {
+  canvasModulePromise ||= import('canvas')
+  const canvasModule = await canvasModulePromise
+
+  if (!fontRegistered && fallbackFontPath) {
+    canvasModule.registerFont(fallbackFontPath, {
+      family: 'Eink Sans',
+    })
+    fontRegistered = true
+  }
+
+  return canvasModule
 }
 
 type HotItem = {
@@ -653,6 +668,7 @@ const drawWeatherIcon = async (
   ctx: CanvasRenderingContext2D,
   weather: WeatherPayload,
 ) => {
+  const { loadImage } = await getCanvasModule()
   const iconName = getWeatherIconName(weather.code, weather.text)
   const paths = weatherIconPaths[iconName].join('')
   const svg = [
@@ -763,6 +779,7 @@ export default defineEventHandler(async (event) => {
     fetchHotList(),
     fetchTodoTip(),
   ])
+  const { createCanvas } = await getCanvasModule()
   const realtimeDate = getRealtimeDate()
   const nextObservance = getNextObservance()
   const almanac = getRealtimeAlmanac()
