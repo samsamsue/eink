@@ -1,8 +1,19 @@
 /// <reference path="../../types/lunar-javascript.d.ts" />
 
-import { createCanvas, loadImage, registerFont, type CanvasRenderingContext2D } from 'canvas'
 import { existsSync } from 'fs'
 import { join } from 'path'
+
+const fontConfigPath = [
+  join(process.cwd(), 'public/fontconfig/fonts.conf'),
+  join(process.cwd(), '.output/public/fontconfig/fonts.conf'),
+  join(process.cwd(), 'fontconfig/fonts.conf'),
+].find((configPath) => existsSync(configPath))
+
+if (!process.env.FONTCONFIG_FILE && fontConfigPath) {
+  process.env.FONTCONFIG_FILE = fontConfigPath
+}
+
+import { createCanvas, loadImage, registerFont, type CanvasRenderingContext2D } from 'canvas'
 import type { ServerResponse } from 'http'
 import { Solar } from 'lunar-javascript'
 
