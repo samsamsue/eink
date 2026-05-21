@@ -65,26 +65,22 @@ export default defineEventHandler(async (event) => {
     })
     const weibo = await weiboRes.json()
 
-    const top10 = weibo.data.band_list.slice(0, 10)
-    const todoListToKeep = todoList.slice(0, 10)
+    //根据num排序
+    weibo.data.band_list.slice(0, 10).forEach(async (item: any, index: number) => {
+        const title =  (item.label_name || '新') + ' | ' + item.word
+        if( index < todoList.length - 1) {
+            await update(todoList[index].id, title)
+        }else {
+            await add(title)
+        }
+    })
 
     if(todoList.length > 10) {
         // 删除10后的
-        await Promise.all(
-            todoList.slice(10).map((item: any) => del(item.id))
-        )
-    }
-
-    //根据num排序
-    await Promise.all(top10.map((item: any, index: number) => {
-        const title =  (item.label_name || '新') + ' | ' + item.word
-
-        if(index < todoListToKeep.length) {
-            return update(todoListToKeep[index].id, title)
+        for(let i = 10; i < todoList.length; i++) {
+            await del(todoList[i].id)
         }
-
-        return add(title)
-    }))
+    }
 
 
     return {
