@@ -13,11 +13,18 @@ const WIDTH = DESIGN_WIDTH * SCALE
 const HEIGHT = DESIGN_HEIGHT * SCALE
 const FONT_FAMILY = '"Eink Sans", "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", "Heiti SC", Arial, sans-serif'
 
+const publicFontPath = join(process.cwd(), 'public/fonts/DroidSansFallbackFull.ttf')
+const outputPublicFontPath = join(process.cwd(), '.output/public/fonts/DroidSansFallbackFull.ttf')
 const bundledFontPath = join(process.cwd(), 'assets/fonts/DroidSansFallbackFull.ttf')
 const systemFontPath = '/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf'
-const fallbackFontPath = existsSync(bundledFontPath) ? bundledFontPath : systemFontPath
+const fallbackFontPath = [
+  publicFontPath,
+  outputPublicFontPath,
+  bundledFontPath,
+  systemFontPath,
+].find((fontPath) => existsSync(fontPath))
 
-if (existsSync(fallbackFontPath)) {
+if (fallbackFontPath) {
   registerFont(fallbackFontPath, {
     family: 'Eink Sans',
   })
