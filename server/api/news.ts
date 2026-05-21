@@ -31,9 +31,18 @@ const add = async (title: string)=> {
     })
 }
 
+const del = async (id: number)=> {
+    //DELETE
+    return fetch(`https://cloud.zectrix.com/open/v1/todos/${id}`, {
+        method: 'DELETE',
+        headers: {
+            'X-API-Key': env.APIKEY,
+        }
+    })
+}
+
 export default defineEventHandler(async (event) => {
     //获取.env的APIKEY
-    
 
     const params = new URLSearchParams({
         status:0+'',
@@ -59,12 +68,19 @@ export default defineEventHandler(async (event) => {
     //根据num排序
     weibo.data.band_list.slice(0, 10).forEach(async (item: any, index: number) => {
         const title =  (item.label_name || '新') + ' | ' + item.word
-        if( index < todoList.length){
-            await update(todoList[index].id, title)
+        if( index < todoList.length - 1) {
+            update(todoList[index].id, title)
         }else {
-            await add(title)
+            add(title)
         }
     })
+
+    if(todoList.length > 10) {
+        // 删除10后的
+        for(let i = 10; i < todoList.length; i++) {
+            del(todoList[i].id)
+        }
+    }
 
 
     return {
