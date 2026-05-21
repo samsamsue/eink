@@ -2,14 +2,20 @@
 
 import { createCanvas, loadImage, registerFont, type CanvasRenderingContext2D } from 'canvas'
 import { existsSync } from 'fs'
+import { join } from 'path'
 import type { ServerResponse } from 'http'
 import { Solar } from 'lunar-javascript'
 
-const WIDTH = 800
-const HEIGHT = 600
+const DESIGN_WIDTH = 800
+const DESIGN_HEIGHT = 600
+const SCALE = 0.5
+const WIDTH = DESIGN_WIDTH * SCALE
+const HEIGHT = DESIGN_HEIGHT * SCALE
 const FONT_FAMILY = '"Eink Sans", "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", "Heiti SC", Arial, sans-serif'
 
-const fallbackFontPath = '/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf'
+const bundledFontPath = join(process.cwd(), 'assets/fonts/DroidSansFallbackFull.ttf')
+const systemFontPath = '/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf'
+const fallbackFontPath = existsSync(bundledFontPath) ? bundledFontPath : systemFontPath
 
 if (existsSync(fallbackFontPath)) {
   registerFont(fallbackFontPath, {
@@ -747,8 +753,9 @@ export default defineEventHandler(async (event) => {
   const ctx = canvas.getContext('2d')
 
   ctx.antialias = 'gray'
+  ctx.scale(SCALE, SCALE)
   ctx.fillStyle = '#f4f4f4'
-  ctx.fillRect(0, 0, WIDTH, HEIGHT)
+  ctx.fillRect(0, 0, DESIGN_WIDTH, DESIGN_HEIGHT)
 
   // Header.
   await drawWeatherIcon(ctx, weather)
@@ -773,7 +780,7 @@ export default defineEventHandler(async (event) => {
   ctx.lineWidth = 2
   ctx.beginPath()
   ctx.moveTo(0, 121)
-  ctx.lineTo(WIDTH, 121)
+  ctx.lineTo(DESIGN_WIDTH, 121)
   ctx.stroke()
 
   // News list.
@@ -786,7 +793,7 @@ export default defineEventHandler(async (event) => {
   ctx.lineWidth = 2
   ctx.beginPath()
   ctx.moveTo(0, 506)
-  ctx.lineTo(WIDTH, 506)
+  ctx.lineTo(DESIGN_WIDTH, 506)
   ctx.stroke()
 
   ctx.fillStyle = '#000'
