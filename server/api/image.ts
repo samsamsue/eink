@@ -1,38 +1,75 @@
 /// <reference path="../../types/lunar-javascript.d.ts" />
-/// <reference path="../../types/opentype-js.d.ts" />
 import type { CanvasRenderingContext2D } from 'canvas'
 import type { ServerResponse } from 'http'
-import opentype from 'opentype.js'
+import { mkdir, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { Solar } from 'lunar-javascript'
 
 const DESIGN_WIDTH = 800
 const DESIGN_HEIGHT = 600
-const SCALE = 0.5
-const WIDTH = DESIGN_WIDTH * SCALE
-const HEIGHT = DESIGN_HEIGHT * SCALE
+const WIDTH = 400
+const HEIGHT = 300
+const RENDER_SCALE = WIDTH / DESIGN_WIDTH
 const FONT_FAMILY = 'sans-serif'
-const CJK_FONT_ASSET_KEY = 'server:fonts:DroidSansFallbackFull.ttf'
-const LATIN_FONT_ASSET_KEY = 'server:fonts:DejaVuSans-Bold.ttf'
+const GRAPHICS_MONO_THRESHOLD = 104
+const HZK12_ASSET_KEY = 'server:fonts/HZK12'
+const HZK16_ASSET_KEY = 'server:fonts/HZK16'
+const GB2312_MAP_ASSET_KEY = 'server:fonts/gb2312.txt'
+const GB2312_OFFSETS_ASSET_KEY = 'server:fonts/gb2312-offsets.json'
 
-const parseFontBuffer = (buffer: Uint8Array) => opentype.parse(buffer.buffer.slice(
-  buffer.byteOffset,
-  buffer.byteOffset + buffer.byteLength,
-))
-
-type PathFont = ReturnType<typeof opentype.parse>
+const s = (value: number) => Math.round(value * RENDER_SCALE)
+const snap = (value: number) => Math.round(value)
 
 type LoadedFont = {
   bytes: Uint8Array
-  font: PathFont
+  family: string
+  path: string
+}
+
+type BitmapFont = {
+  width: number
+  height: number
+  ascent: number
+  baselineOffset: number
+  rowBytes: number
+  bytes: Uint8Array
+}
+
+type BitmapFontState = {
+  charIndex: Map<string, number>
+  font12: BitmapFont
+  font16: BitmapFont
 }
 
 type FontState = {
+  bitmap: BitmapFontState
   cjk: LoadedFont
   latin: LoadedFont
+  fontStack: string
+  preset: string
   source: string
 }
 
 let fontStatePromise: Promise<FontState> | null = null
+
+const FONT_PRESETS = {
+  noto: {
+    cjk: 'server:fonts:NotoSansCJKSC-Regular.otf',
+    latin: 'server:fonts:NotoSansCJKSC-Regular.otf',
+  },
+  mplus12: {
+    cjk: 'server:fonts:mplus_hzk_12.ttf',
+    latin: 'server:fonts:mplus_hzk_12.ttf',
+  },
+  mplus13: {
+    cjk: 'server:fonts:mplus_hzk_13.ttf',
+    latin: 'server:fonts:mplus_hzk_13.ttf',
+  },
+} as const
+
+type FontPresetName = keyof typeof FONT_PRESETS
+let activeFontPreset: FontPresetName = 'noto'
 
 const readFontAsset = async (key: string) => {
   const buffer = await useStorage('/assets').getItemRaw(key)
@@ -44,24 +81,74 @@ const readFontAsset = async (key: string) => {
   return buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer)
 }
 
+const readTextAsset = async (key: string) => {
+  const buffer = await readFontAsset(key)
+  return new TextDecoder('utf-8').decode(buffer)
+}
+
 const loadFonts = async (): Promise<FontState> => {
   if (!fontStatePromise) {
     fontStatePromise = (async () => {
-      const [cjkFontBytes, latinFontBytes] = await Promise.all([
-        readFontAsset(CJK_FONT_ASSET_KEY),
-        readFontAsset(LATIN_FONT_ASSET_KEY),
+      const { registerFont } = await getCanvasModule()
+      const fontPreset = FONT_PRESETS[activeFontPreset]
+      const cjkFamily = `EinkCJK-${activeFontPreset}`
+      const latinFamily = `EinkLatin-${activeFontPreset}`
+      const [cjkFontBytes, latinFontBytes, hzk12Bytes, hzk16Bytes, gb2312Map, gb2312Offsets] = await Promise.all([
+        readFontAsset(fontPreset.cjk),
+        readFontAsset(fontPreset.latin),
+        readFontAsset(HZK12_ASSET_KEY),
+        readFontAsset(HZK16_ASSET_KEY),
+        readTextAsset(GB2312_MAP_ASSET_KEY),
+        readTextAsset(GB2312_OFFSETS_ASSET_KEY),
+      ])
+      const fontCacheDir = await getFontCacheDir()
+      const cjkFontPath = join(fontCacheDir, 'cjk-font.otf')
+      const latinFontPath = join(fontCacheDir, 'latin-font.otf')
+      const charIndex = new Map<string, number>(Object.entries(JSON.parse(gb2312Offsets) as Record<string, number>))
+
+      void gb2312Map
+
+      await Promise.all([
+        writeFile(cjkFontPath, cjkFontBytes),
+        writeFile(latinFontPath, latinFontBytes),
       ])
 
+      registerFont(cjkFontPath, { family: cjkFamily })
+      registerFont(latinFontPath, { family: latinFamily })
+
       return {
+        bitmap: {
+          charIndex,
+          font12: {
+            width: 12,
+            height: 12,
+            ascent: 10,
+            baselineOffset: 1,
+            rowBytes: 2,
+            bytes: hzk12Bytes,
+          },
+          font16: {
+            width: 16,
+            height: 16,
+            ascent: 13,
+            baselineOffset: 1,
+            rowBytes: 2,
+            bytes: hzk16Bytes,
+          },
+        },
         cjk: {
           bytes: cjkFontBytes,
-          font: parseFontBuffer(cjkFontBytes),
+          family: cjkFamily,
+          path: cjkFontPath,
         },
         latin: {
           bytes: latinFontBytes,
-          font: parseFontBuffer(latinFontBytes),
+          family: latinFamily,
+          path: latinFontPath,
         },
-        source: 'font-module',
+        fontStack: `"${latinFamily}", "${cjkFamily}", ${FONT_FAMILY}`,
+        preset: activeFontPreset,
+        source: 'canvas-registerFont',
       }
     })().catch((error) => {
       fontStatePromise = null
@@ -77,6 +164,15 @@ let canvasModulePromise: Promise<typeof import('canvas')> | null = null
 const getCanvasModule = async () => {
   canvasModulePromise ||= import('canvas')
   return canvasModulePromise
+}
+
+let fontCacheDirPromise: Promise<string> | null = null
+
+const getFontCacheDir = async () => {
+  fontCacheDirPromise ||= mkdir(join(tmpdir(), 'eink-font-cache'), { recursive: true }).then(() => (
+    join(tmpdir(), 'eink-font-cache')
+  ))
+  return fontCacheDirPromise
 }
 
 type HotItem = {
@@ -515,13 +611,24 @@ const fetchHotList = async (): Promise<HotItem[]> => {
       return fallbackHotList
     }
 
-    const hotList = bandList
+    const normalizedList = bandList
       .filter((item: WeiboHotBandItem) => !item.ad_channel && item.word)
-      .slice(0, 6)
       .map((item: WeiboHotBandItem) => ({
         tag: item.label_name || '新',
         title: item.word || '',
       }))
+
+    const topFixed = normalizedList.slice(0, 5)
+    const remaining = normalizedList.slice(5)
+
+    for (let index = remaining.length - 1; index > 0; index--) {
+      const randomIndex = Math.floor(Math.random() * (index + 1))
+      const current = remaining[index]
+      remaining[index] = remaining[randomIndex]
+      remaining[randomIndex] = current
+    }
+
+    const hotList = [...topFixed, ...remaining.slice(0, 3)]
 
     return hotList.length > 0 ? hotList : fallbackHotList
   } catch {
@@ -622,81 +729,234 @@ const pushImageToDevice = async (
 }
 
 const setFont = (
+  fonts: FontState,
   ctx: CanvasRenderingContext2D,
   size: number,
   weight: number | 'bold' | 'normal' = 'bold',
 ) => {
-  ctx.font = `${weight} ${size}px ${FONT_FAMILY}`
+  ctx.font = `${weight} ${s(size)}px ${fonts.fontStack}`
 }
 
 const getFontSize = (ctx: CanvasRenderingContext2D) => (
   Number(ctx.font.match(/(\d+(?:\.\d+)?)px/)?.[1] || 16)
 )
 
-const shouldDrawWithPath = (char: string) => /[\p{Script=Han}，。、：；！？（）《》“”‘’]/u.test(char)
-const getTextFont = (fonts: FontState, char: string) => (
-  shouldDrawWithPath(char) ? fonts.cjk.font : fonts.latin.font
-)
+const toGb2312CompatibleChar = (char: string) => {
+  if (/[A-Z]/.test(char)) {
+    return String.fromCharCode(char.charCodeAt(0) - 0x41 + 0xff21)
+  }
 
-const getGlyphAdvanceWidth = (
-  font: PathFont,
+  if (/[a-z]/.test(char)) {
+    return String.fromCharCode(char.charCodeAt(0) - 0x61 + 0xff41)
+  }
+
+  if (/[0-9]/.test(char)) {
+    return String.fromCharCode(char.charCodeAt(0) - 0x30 + 0xff10)
+  }
+
+  const symbolMap: Record<string, string> = {
+    '%': '％',
+    ':': '：',
+    '.': '．',
+    ',': '，',
+    '-': '－',
+    '/': '／',
+    '(': '（',
+    ')': '）',
+    '[': '［',
+    ']': '］',
+    '+': '＋',
+    '?': '？',
+    '!': '！',
+    '@': '＠',
+    '&': '＆',
+    '*': '＊',
+    '#': '＃',
+    '=': '＝',
+    '<': '＜',
+    '>': '＞',
+    '\'': '＇',
+    '"': '＂',
+  }
+
+  return symbolMap[char] || char
+}
+
+const getBitmapGlyph = (
+  fonts: FontState,
   char: string,
   size: number,
 ) => {
-  const glyph = font.charToGlyph(char)
+  const normalizedChar = toGb2312CompatibleChar(char)
+  const glyphIndex = fonts.bitmap.charIndex.get(normalizedChar)
 
-  return (glyph.advanceWidth || 0) * (size / font.unitsPerEm)
+  if (glyphIndex == null) {
+    return null
+  }
+
+  const bitmapFont = size <= 13 ? fonts.bitmap.font12 : fonts.bitmap.font16
+  const glyphByteLength = bitmapFont.rowBytes * bitmapFont.height
+  const offset = glyphIndex * glyphByteLength
+
+  if (offset + glyphByteLength > bitmapFont.bytes.length) {
+    return null
+  }
+
+  return {
+    char: normalizedChar,
+    glyphIndex,
+    bitmapFont,
+    offset,
+  }
 }
 
-const getGlyphPath = (
-  font: PathFont,
-  char: string,
+const getBitmapGlyphAdvance = (
+  glyph: NonNullable<ReturnType<typeof getBitmapGlyph>>,
+) => {
+  const { bitmapFont, offset } = glyph
+  let leftmostPixel = bitmapFont.width
+  let rightmostPixel = -1
+
+  for (let row = 0; row < bitmapFont.height; row++) {
+    for (let byteIndex = 0; byteIndex < bitmapFont.rowBytes; byteIndex++) {
+      const value = bitmapFont.bytes[offset + row * bitmapFont.rowBytes + byteIndex]
+
+      if (value === 0) {
+        continue
+      }
+
+      for (let bit = 0; bit < 8; bit++) {
+        if ((value & (0x80 >> bit)) === 0) {
+          continue
+        }
+
+        const px = byteIndex * 8 + bit
+
+        if (px < bitmapFont.width) {
+          leftmostPixel = Math.min(leftmostPixel, px)
+          rightmostPixel = Math.max(rightmostPixel, px)
+        }
+      }
+    }
+  }
+
+  if (rightmostPixel < 0 || leftmostPixel >= bitmapFont.width) {
+    return {
+      advance: Math.max(1, Math.floor(bitmapFont.width / 2)),
+      leftTrim: 0,
+    }
+  }
+
+  return {
+    advance: rightmostPixel - leftmostPixel + 2,
+    leftTrim: leftmostPixel,
+  }
+}
+
+const measureMixedText = (
+  fonts: FontState,
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  size: number,
+) => Array.from(text).reduce((width, char) => {
+  const glyph = getBitmapGlyph(fonts, char, size)
+
+  if (glyph) {
+    return width + getBitmapGlyphAdvance(glyph).advance
+  }
+
+  return width + ctx.measureText(char).width
+}, 0)
+
+const drawBitmapText = (
+  fonts: FontState,
+  ctx: CanvasRenderingContext2D,
+  text: string,
   x: number,
   y: number,
   size: number,
 ) => {
-  const glyph = font.charToGlyph(char)
+  const measuredWidth = measureMixedText(fonts, ctx, text, size)
 
-  return glyph.getPath(x, y, size, {}, font)
+  const drawX = snap(ctx.textAlign === 'right'
+    ? x - measuredWidth
+    : ctx.textAlign === 'center'
+      ? x - measuredWidth / 2
+      : x)
+  const topYForFallback = ctx.textBaseline === 'middle'
+    ? snap(y + size * 0.36)
+    : snap(y)
+  const originalTextAlign = ctx.textAlign
+  const originalTextBaseline = ctx.textBaseline
+  let cursorX = drawX
+
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'alphabetic'
+
+  for (const char of Array.from(text)) {
+    const glyph = getBitmapGlyph(fonts, char, size)
+
+    if (!glyph) {
+      ctx.fillText(char, snap(cursorX), topYForFallback)
+      cursorX += ctx.measureText(char).width
+      continue
+    }
+
+    const { bitmapFont, offset } = glyph
+    const metrics = getBitmapGlyphAdvance(glyph)
+    const topY = originalTextBaseline === 'middle'
+      ? snap(y - bitmapFont.height / 2 + bitmapFont.baselineOffset)
+      : snap(y - bitmapFont.ascent + bitmapFont.baselineOffset)
+
+    for (let row = 0; row < bitmapFont.height; row++) {
+      for (let byteIndex = 0; byteIndex < bitmapFont.rowBytes; byteIndex++) {
+        const value = bitmapFont.bytes[offset + row * bitmapFont.rowBytes + byteIndex]
+
+        for (let bit = 0; bit < 8; bit++) {
+          if ((value & (0x80 >> bit)) === 0) {
+            continue
+          }
+
+          const px = cursorX + byteIndex * 8 + bit - metrics.leftTrim
+
+          if (px < cursorX || px >= cursorX + bitmapFont.width) {
+            continue
+          }
+
+          ctx.fillRect(px, topY + row, 1, 1)
+        }
+      }
+    }
+
+    cursorX += metrics.advance
+  }
+
+  ctx.textAlign = originalTextAlign
+  ctx.textBaseline = originalTextBaseline
+
+  return true
 }
-
-const getGlyphPathCommandCount = (
-  font: PathFont,
-  char: string,
-  size: number,
-) => getGlyphPath(font, char, 0, size, size).commands.length
 
 const getFontDebug = async () => {
   const fonts = await loadFonts()
 
   return {
+    preset: fonts.preset,
     source: fonts.source,
     cjkBytes: fonts.cjk.bytes.byteLength,
     latinBytes: fonts.latin.bytes.byteLength,
-    cjkLoaded: Boolean(fonts.cjk.font),
-    latinLoaded: Boolean(fonts.latin.font),
-    cjkProbeWidth: Array.from('测试中文').reduce((total, char) => (
-      total + getGlyphAdvanceWidth(fonts.cjk.font, char, 40)
-    ), 0),
-    latinProbeWidth: Array.from('ABC123').reduce((total, char) => (
-      total + getGlyphAdvanceWidth(fonts.latin.font, char, 40)
-    ), 0),
-    cjkProbePathCommands: getGlyphPathCommandCount(fonts.cjk.font, '测', 40),
-    latinProbePathCommands: getGlyphPathCommandCount(fonts.latin.font, 'A', 40),
+    cjkFamily: fonts.cjk.family,
+    latinFamily: fonts.latin.family,
+    cjkPath: fonts.cjk.path,
+    latinPath: fonts.latin.path,
   }
 }
 
 const measureDisplayText = (
-  fonts: FontState,
+  _fonts: FontState,
   ctx: CanvasRenderingContext2D,
   text: string,
-) => {
-  const size = getFontSize(ctx)
-
-  return Array.from(text).reduce((width, char) => (
-    width + (getGlyphAdvanceWidth(getTextFont(fonts, char), char, size) || ctx.measureText(char).width)
-  ), 0)
-}
+) => ctx.measureText(text).width
 
 const drawBoldText = (
   fonts: FontState,
@@ -707,34 +967,25 @@ const drawBoldText = (
   _strokeWidth = 0,
 ) => {
   const size = getFontSize(ctx)
+  if (drawBitmapText(fonts, ctx, text, x, y, size)) {
+    return
+  }
+
   const measuredWidth = measureDisplayText(fonts, ctx, text)
-  const drawX = ctx.textAlign === 'right'
+  const originalTextAlign = ctx.textAlign
+  const originalTextBaseline = ctx.textBaseline
+  const drawX = snap(ctx.textAlign === 'right'
     ? x - measuredWidth
     : ctx.textAlign === 'center'
       ? x - measuredWidth / 2
-      : x
-  const drawY = ctx.textBaseline === 'middle' ? y + size * 0.36 : y
-  const originalTextAlign = ctx.textAlign
-  let cursorX = drawX
-
+      : x)
+  const drawY = snap(ctx.textBaseline === 'middle' ? y + size * 0.36 : y)
+  void fonts
   ctx.textAlign = 'left'
-
-  for (const char of Array.from(text)) {
-    const font = getTextFont(fonts, char)
-
-    if (font) {
-      const path = getGlyphPath(font, char, cursorX, drawY, size)
-
-      path.fill = String(ctx.fillStyle)
-      path.draw(ctx)
-      cursorX += getGlyphAdvanceWidth(font, char, size)
-    } else {
-      ctx.fillText(char, cursorX, y)
-      cursorX += ctx.measureText(char).width
-    }
-  }
-
+  ctx.textBaseline = 'alphabetic'
+  ctx.fillText(text, drawX, drawY)
   ctx.textAlign = originalTextAlign
+  ctx.textBaseline = originalTextBaseline
 }
 
 const ellipsizeText = (
@@ -796,7 +1047,7 @@ const drawWeatherIcon = async (
   ].join('')
   const image = await loadImage(`data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`)
 
-  ctx.drawImage(image, 10, 12, 101, 101)
+  ctx.drawImage(image, s(10), s(12), s(101), s(101))
 }
 
 const drawAlmanac = (
@@ -806,22 +1057,16 @@ const drawAlmanac = (
 ) => {
   ctx.save()
 
-  ctx.strokeStyle = '#000'
-  ctx.lineWidth = 2
-  ctx.setLineDash([6, 6])
-  ctx.beginPath()
-  ctx.moveTo(246, 24)
-  ctx.lineTo(246, 103)
-  ctx.moveTo(520, 24)
-  ctx.lineTo(520, 103)
-  ctx.stroke()
+  ctx.fillStyle = '#000'
+  ctx.fillRect(s(226), s(24), 1, s(103) - s(24) + 1)
+  ctx.fillRect(s(550), s(24), 1, s(103) - s(24) + 1)
 
   ctx.fillStyle = '#000'
   ctx.textAlign = 'left'
   ctx.textBaseline = 'middle'
-  setFont(ctx, 24, 'bold')
-  drawBoldText(fonts, ctx, ellipsizeText(fonts, ctx, `宜：${almanac.yi.join('、')}`, 262), 260, 48)
-  drawBoldText(fonts, ctx, ellipsizeText(fonts, ctx, `忌：${almanac.ji.join('、')}`, 262), 260, 83)
+  setFont(fonts, ctx, 26, 'normal')
+  drawBoldText(fonts, ctx, ellipsizeText(fonts, ctx, `宜：${almanac.yi.join('、')}`, s(302)), s(240), s(48))
+  drawBoldText(fonts, ctx, ellipsizeText(fonts, ctx, `忌：${almanac.ji.join('、')}`, s(302)), s(240), s(83))
 
   ctx.restore()
 }
@@ -829,20 +1074,20 @@ const drawAlmanac = (
 const drawMessageIcon = (ctx: CanvasRenderingContext2D, x: number, y: number) => {
   ctx.save()
   ctx.fillStyle = '#fff'
-  roundRect(ctx, x, y, 48, 36, 5)
+  roundRect(ctx, x, y, s(48), s(36), s(5))
   ctx.fill()
 
   ctx.beginPath()
-  ctx.moveTo(x + 17, y + 34)
-  ctx.lineTo(x + 10, y + 48)
-  ctx.lineTo(x + 28, y + 36)
+  ctx.moveTo(x + s(17), y + s(34))
+  ctx.lineTo(x + s(10), y + s(48))
+  ctx.lineTo(x + s(28), y + s(36))
   ctx.closePath()
   ctx.fill()
 
   ctx.fillStyle = '#000'
   for (let i = 0; i < 3; i++) {
     ctx.beginPath()
-    ctx.arc(x + 15 + i * 11, y + 17, 2.2, 0, Math.PI * 2)
+    ctx.arc(x + s(15 + i * 11), y + s(17), s(2.2), 0, Math.PI * 2)
     ctx.fill()
   }
 
@@ -857,25 +1102,77 @@ const drawHotItem = (
   title: string,
 ) => {
   ctx.fillStyle = '#000'
-  roundRect(ctx, 26, centerY - 18.5, 37, 37, 9)
+  roundRect(ctx, s(24), centerY - s(20), s(40), s(40), s(10))
   ctx.fill()
 
   ctx.fillStyle = '#fff'
-  setFont(ctx, 27, 'bold')
+  setFont(fonts, ctx, 29, 'normal')
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  drawBoldText(fonts, ctx, tag, 44.5, centerY)
+  drawBoldText(fonts, ctx, tag, s(44), centerY)
 
   ctx.fillStyle = '#000'
-  setFont(ctx, 30, 'bold')
+  setFont(fonts, ctx, 32, 'normal')
   ctx.textAlign = 'left'
   ctx.textBaseline = 'middle'
-  drawBoldText(fonts, ctx, title, 77, centerY)
+  drawBoldText(fonts, ctx, title, s(79), centerY)
+}
+
+const toMonochromeBuffer = async (
+  ctx: CanvasRenderingContext2D,
+) => {
+  const imageData = ctx.getImageData(0, 0, WIDTH, HEIGHT)
+  const { data } = imageData
+
+  for (let index = 0; index < data.length; index += 4) {
+    const grayscale = data[index] * 0.299 + data[index + 1] * 0.587 + data[index + 2] * 0.114
+    const value = grayscale >= 10 ? 255 : 0
+
+    data[index] = value
+    data[index + 1] = value
+    data[index + 2] = value
+    data[index + 3] = 255
+  }
+
+  ctx.putImageData(imageData, 0, 0)
+
+  return (ctx.canvas as unknown as { toBuffer: (mimeType: string) => Buffer }).toBuffer('image/png')
+}
+
+const applyMonochromeToContext = (
+  ctx: CanvasRenderingContext2D,
+  threshold = GRAPHICS_MONO_THRESHOLD,
+) => {
+  const imageData = ctx.getImageData(0, 0, WIDTH, HEIGHT)
+  const { data } = imageData
+
+  for (let index = 0; index < data.length; index += 4) {
+    const grayscale = data[index] * 0.299 + data[index + 1] * 0.587 + data[index + 2] * 0.114
+    const value = grayscale >= threshold ? 255 : 0
+
+    data[index] = value
+    data[index + 1] = value
+    data[index + 2] = value
+    data[index + 3] = 255
+  }
+
+  ctx.putImageData(imageData, 0, 0)
 }
 
 export default defineEventHandler(async (event) => {
   const query = getQuery(event)
   const env = useRuntimeConfig()
+  const graphicsThreshold = typeof query.graphicsThreshold === 'string'
+    ? Math.max(0, Math.min(255, Number(query.graphicsThreshold) || GRAPHICS_MONO_THRESHOLD))
+    : GRAPHICS_MONO_THRESHOLD
+  const requestedFontPreset = typeof query.fontPreset === 'string' && query.fontPreset in FONT_PRESETS
+    ? query.fontPreset as FontPresetName
+    : 'noto'
+
+  if (requestedFontPreset !== activeFontPreset) {
+    activeFontPreset = requestedFontPreset
+    fontStatePromise = null
+  }
 
   if (env.PW && query.pw !== env.PW) {
     throw createError({
@@ -922,24 +1219,37 @@ export default defineEventHandler(async (event) => {
   const nextObservance = getNextObservance()
   const almanac = getRealtimeAlmanac()
 
+  const graphicsCanvas = createCanvas(WIDTH, HEIGHT)
+  const graphicsCtx = graphicsCanvas.getContext('2d')
+  const textCanvas = createCanvas(WIDTH, HEIGHT)
+  const textCtx = textCanvas.getContext('2d')
   const canvas = createCanvas(WIDTH, HEIGHT)
   const ctx = canvas.getContext('2d')
 
-  ctx.antialias = 'gray'
-  ctx.scale(SCALE, SCALE)
+  graphicsCtx.antialias = 'gray'
+  graphicsCtx.imageSmoothingEnabled = false
+  graphicsCtx.fillStyle = '#ffffff'
+  graphicsCtx.fillRect(0, 0, WIDTH, HEIGHT)
+
+  textCtx.antialias = 'none'
+  textCtx.imageSmoothingEnabled = false
+
+  ctx.antialias = 'none'
+  ctx.imageSmoothingEnabled = false
   ctx.fillStyle = '#ffffff'
-  ctx.fillRect(0, 0, DESIGN_WIDTH, DESIGN_HEIGHT)
+  ctx.fillRect(0, 0, WIDTH, HEIGHT)
 
   if (fontTest) {
-    ctx.fillStyle = '#000'
-    ctx.textAlign = 'left'
-    ctx.textBaseline = 'alphabetic'
-    setFont(ctx, 64, 'bold')
-    drawBoldText(fonts, ctx, '中文测试 ABC123 Debian 25°C', 30, 120)
-    setFont(ctx, 42, 'bold')
-    drawBoldText(fonts, ctx, `font: ${(await getFontDebug()).source}`, 30, 200)
+    textCtx.fillStyle = '#000'
+    textCtx.textAlign = 'left'
+    textCtx.textBaseline = 'alphabetic'
+    setFont(fonts, textCtx, 64, 'normal')
+    drawBoldText(fonts, textCtx, '中文测试 ABC123 Debian 25°C', s(30), s(120))
+    setFont(fonts, textCtx, 42, 'normal')
+    drawBoldText(fonts, textCtx, `font: ${(await getFontDebug()).source}`, s(30), s(200))
 
-    const buffer = canvas.toBuffer('image/png')
+    ctx.drawImage(textCanvas, 0, 0)
+    const buffer = (canvas as unknown as { toBuffer: (mimeType: string) => Buffer }).toBuffer('image/png')
     const res = event.node.res as ServerResponse
     res.setHeader('Content-Type', 'image/png')
     res.setHeader('Content-Length', buffer.length)
@@ -948,67 +1258,87 @@ export default defineEventHandler(async (event) => {
   }
 
   // Header.
-  await drawWeatherIcon(ctx, weather)
+  await drawWeatherIcon(graphicsCtx, weather)
 
-  ctx.fillStyle = '#000'
-  ctx.textBaseline = 'alphabetic'
-  ctx.textAlign = 'left'
-  setFont(ctx, 42, 'bold')
-  drawBoldText(fonts, ctx, `${weather.temperature}°C`, 115, 58)
-  setFont(ctx, 33, 'bold')
-  drawBoldText(fonts, ctx, weather.text, 115, 99)
+  textCtx.fillStyle = '#000'
+  textCtx.textBaseline = 'alphabetic'
+  textCtx.textAlign = 'left'
+  setFont(fonts, textCtx, 32, 'normal')
+  drawBoldText(fonts, textCtx, `${weather.temperature}°C`, s(115), s(58))
+  setFont(fonts, textCtx, 33, 'normal')
+  drawBoldText(fonts, textCtx, weather.text, s(115), s(99))
 
-  drawAlmanac(fonts, ctx, almanac)
+  graphicsCtx.save()
+  graphicsCtx.fillStyle = '#000'
+  graphicsCtx.fillRect(s(226), s(24), 1, s(103) - s(24) + 1)
+  graphicsCtx.fillRect(s(550), s(24), 1, s(103) - s(24) + 1)
+  graphicsCtx.restore()
 
-  ctx.textAlign = 'right'
-  setFont(ctx, 37, 'bold')
-  drawBoldText(fonts, ctx, realtimeDate.date, 780, 56)
-  setFont(ctx, 31, 'bold')
-  drawBoldText(fonts, ctx, `${realtimeDate.weekday}  ${realtimeDate.lunar}`, 781, 98)
+  textCtx.fillStyle = '#000'
+  textCtx.textAlign = 'left'
+  textCtx.textBaseline = 'middle'
+  setFont(fonts, textCtx, 26, 'normal')
+  drawBoldText(fonts, textCtx, ellipsizeText(fonts, textCtx, `宜：${almanac.yi.join('、')}`, s(302)), s(240), s(48))
+  drawBoldText(fonts, textCtx, ellipsizeText(fonts, textCtx, `忌：${almanac.ji.join('、')}`, s(302)), s(240), s(83))
 
-  ctx.strokeStyle = '#000'
-  ctx.lineWidth = 2
-  ctx.beginPath()
-  ctx.moveTo(0, 121)
-  ctx.lineTo(DESIGN_WIDTH, 121)
-  ctx.stroke()
+  textCtx.textAlign = 'right'
+  setFont(fonts, textCtx, 34, 'normal')
+  drawBoldText(fonts, textCtx, realtimeDate.date, s(786), s(54))
+  setFont(fonts, textCtx, 27, 'normal')
+  drawBoldText(fonts, textCtx, `${realtimeDate.weekday}  ${realtimeDate.lunar}`, s(787), s(86))
+
+  graphicsCtx.fillStyle = '#000'
+  graphicsCtx.fillRect(0, s(121), WIDTH, 1)
 
   // News list.
-  ctx.textAlign = 'left'
+  textCtx.textAlign = 'left'
   hotList.forEach((item, index) => {
-    drawHotItem(fonts, ctx, 178 + index * 56, item.tag, item.title)
+    const centerY = s(156 + index * 44)
+
+    graphicsCtx.fillStyle = '#000'
+    roundRect(graphicsCtx, s(24), centerY - s(20), s(40), s(40), s(10))
+    graphicsCtx.fill()
+
+    textCtx.fillStyle = '#fff'
+    setFont(fonts, textCtx, 29, 'normal')
+    textCtx.textAlign = 'center'
+    textCtx.textBaseline = 'middle'
+    drawBoldText(fonts, textCtx, item.tag, s(44), centerY)
+
+    textCtx.fillStyle = '#000'
+    setFont(fonts, textCtx, 32, 'normal')
+    textCtx.textAlign = 'left'
+    textCtx.textBaseline = 'middle'
+    drawBoldText(fonts, textCtx, item.title, s(79), centerY)
   })
 
   // Footer.
-  ctx.lineWidth = 2
-  ctx.beginPath()
-  ctx.moveTo(0, 506)
-  ctx.lineTo(DESIGN_WIDTH, 506)
-  ctx.stroke()
+  graphicsCtx.fillStyle = '#000'
+  graphicsCtx.fillRect(0, s(506), WIDTH, 1)
 
-  ctx.fillStyle = '#000'
-  setFont(ctx, 42, 'bold')
-  ctx.textAlign = 'left'
-  ctx.textBaseline = 'middle'
-  drawBoldText(fonts, ctx, nextObservance, 16, 553)
+  textCtx.fillStyle = '#000'
+  setFont(fonts, textCtx, 42, 'normal')
+  textCtx.textAlign = 'left'
+  textCtx.textBaseline = 'middle'
+  drawBoldText(fonts, textCtx, nextObservance, s(16), s(553))
 
   if (todoTip) {
-    const bubbleRight = 784
-    const bubbleY = 521
-    const bubbleHeight = 63
-    const bubbleRadius = 15
-    const bubbleMaxWidth = 458
-    const bubbleMinWidth = 170
-    const bubblePaddingLeft = 18
-    const bubblePaddingRight = 24
-    const iconWidth = 48
-    const iconGap = 13
+    const bubbleRight = s(784)
+    const bubbleY = s(521)
+    const bubbleHeight = s(63)
+    const bubbleRadius = s(15)
+    const bubbleMaxWidth = s(458)
+    const bubbleMinWidth = s(170)
+    const bubblePaddingLeft = s(18)
+    const bubblePaddingRight = s(24)
+    const iconWidth = s(48)
+    const iconGap = s(13)
     const textMaxWidth = bubbleMaxWidth - bubblePaddingLeft - iconWidth - iconGap - bubblePaddingRight
 
-    ctx.fillStyle = '#000'
-    setFont(ctx, 31, 'bold')
-    const todoText = ellipsizeText(fonts, ctx, todoTip, textMaxWidth)
-    const todoTextWidth = measureDisplayText(fonts, ctx, todoText)
+    textCtx.fillStyle = '#000'
+    setFont(fonts, textCtx, 31, 'normal')
+    const todoText = ellipsizeText(fonts, textCtx, todoTip, textMaxWidth)
+    const todoTextWidth = measureDisplayText(fonts, textCtx, todoText)
     const bubbleWidth = Math.min(
       bubbleMaxWidth,
       Math.max(
@@ -1020,19 +1350,22 @@ export default defineEventHandler(async (event) => {
     const iconX = bubbleX + bubblePaddingLeft
     const textX = iconX + iconWidth + iconGap
 
-    roundRect(ctx, bubbleX, bubbleY, bubbleWidth, bubbleHeight, bubbleRadius)
-    ctx.fill()
+    graphicsCtx.fillStyle = '#000'
+    roundRect(graphicsCtx, bubbleX, bubbleY, bubbleWidth, bubbleHeight, bubbleRadius)
+    graphicsCtx.fill()
+    drawMessageIcon(graphicsCtx, iconX, s(529))
 
-    drawMessageIcon(ctx, iconX, 529)
-
-    ctx.fillStyle = '#fff'
-    setFont(ctx, 31, 'bold')
-    ctx.textAlign = 'left'
-    ctx.textBaseline = 'middle'
-    drawBoldText(fonts, ctx, todoText, textX, 552.5)
+    textCtx.fillStyle = '#fff'
+    setFont(fonts, textCtx, 31, 'normal')
+    textCtx.textAlign = 'left'
+    textCtx.textBaseline = 'middle'
+    drawBoldText(fonts, textCtx, todoText, textX, s(552.5))
   }
 
-  const buffer = canvas.toBuffer('image/png')
+  applyMonochromeToContext(graphicsCtx, graphicsThreshold)
+  ctx.drawImage(graphicsCanvas, 0, 0)
+  ctx.drawImage(textCanvas, 0, 0)
+  const buffer = (canvas as unknown as { toBuffer: (mimeType: string) => Buffer }).toBuffer('image/png')
   if (!noPush) {
     await pushImageToDevice(buffer, pushOptions)
   }
