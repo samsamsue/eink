@@ -1,12 +1,11 @@
 /// <reference path="../../types/lunar-javascript.d.ts" />
 /// <reference path="../../types/opentype-js.d.ts" />
-
-import { existsSync, readFileSync } from 'fs'
-import { join } from 'path'
 import type { CanvasRenderingContext2D } from 'canvas'
 import type { ServerResponse } from 'http'
 import opentype from 'opentype.js'
 import { Solar } from 'lunar-javascript'
+import { cjkFontBase64 } from '../assets/generated/cjk-font'
+import { latinFontBase64 } from '../assets/generated/latin-font'
 
 const DESIGN_WIDTH = 800
 const DESIGN_HEIGHT = 600
@@ -14,73 +13,22 @@ const SCALE = 0.5
 const WIDTH = DESIGN_WIDTH * SCALE
 const HEIGHT = DESIGN_HEIGHT * SCALE
 const FONT_FAMILY = 'sans-serif'
-const cjkFontPath = [
-  join(process.cwd(), 'public/fonts/DroidSansFallbackFull.ttf'),
-  join(process.cwd(), '.output/public/fonts/DroidSansFallbackFull.ttf'),
-  '/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf',
-].find((candidate) => existsSync(candidate))
-const latinFontPath = [
-  join(process.cwd(), 'public/fonts/DejaVuSans-Bold.ttf'),
-  join(process.cwd(), '.output/public/fonts/DejaVuSans-Bold.ttf'),
-  '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
-].find((candidate) => existsSync(candidate))
-let cjkPathFont: ReturnType<typeof opentype.parse> | null = null
-let latinPathFont: ReturnType<typeof opentype.parse> | null = null
-let pathFontLoaded = false
-let fontLoadSource = 'none'
 
-const parseFontBuffer = (buffer: Buffer) => opentype.parse(buffer.buffer.slice(
+const parseFontBuffer = (buffer: Uint8Array) => opentype.parse(buffer.buffer.slice(
   buffer.byteOffset,
   buffer.byteOffset + buffer.byteLength,
 ))
 
-const getPathFont = async () => {
-  if (pathFontLoaded) {
-    return { cjkPathFont, latinPathFont }
-  }
-
-  pathFontLoaded = true
-
-  try {
-    const [cjkAsset, latinAsset] = await Promise.all([
-      useStorage('assets:fonts').getItemRaw('DroidSansFallbackFull.ttf'),
-      useStorage('assets:fonts').getItemRaw('DejaVuSans-Bold.ttf'),
-    ])
-
-    if (cjkAsset) {
-      cjkPathFont = parseFontBuffer(Buffer.from(cjkAsset))
-      fontLoadSource = 'server-assets'
-    }
-
-    if (latinAsset) {
-      latinPathFont = parseFontBuffer(Buffer.from(latinAsset))
-      fontLoadSource = 'server-assets'
-    }
-
-    if (cjkPathFont || latinPathFont) {
-      return { cjkPathFont, latinPathFont }
-    }
-  } catch {
-    // Fall through to local filesystem paths for local development.
-  }
-
-  if (cjkFontPath) {
-    cjkPathFont = parseFontBuffer(readFileSync(cjkFontPath))
-    fontLoadSource = 'filesystem'
-  }
-
-  if (latinFontPath) {
-    latinPathFont = parseFontBuffer(readFileSync(latinFontPath))
-    fontLoadSource = 'filesystem'
-  }
-
-  return { cjkPathFont, latinPathFont }
-}
+const cjkFontBytes = Buffer.from(cjkFontBase64, 'base64')
+const latinFontBytes = Buffer.from(latinFontBase64, 'base64')
+const cjkPathFont = parseFontBuffer(cjkFontBytes)
+const latinPathFont = parseFontBuffer(latinFontBytes)
+const fontLoadSource = 'base64-module'
 
 const getFontDebug = () => ({
   source: fontLoadSource,
-  cjkPath: cjkFontPath || null,
-  latinPath: latinFontPath || null,
+  cjkBytes: cjkFontBytes.byteLength,
+  latinBytes: latinFontBytes.byteLength,
   cjkLoaded: Boolean(cjkPathFont),
   latinLoaded: Boolean(latinPathFont),
   cjkProbeWidth: cjkPathFont?.getAdvanceWidth('测试中文', 40) || 0,
@@ -872,7 +820,6 @@ export default defineEventHandler(async (event) => {
     fetchTodoTip(),
   ])
   const { createCanvas } = await getCanvasModule()
-  await getPathFont()
 
   if (debug) {
     return {
@@ -890,7 +837,7 @@ export default defineEventHandler(async (event) => {
 
   ctx.antialias = 'gray'
   ctx.scale(SCALE, SCALE)
-  ctx.fillStyle = '#f4f4f4'
+  ctx.fillStyle = '#ffffff'
   ctx.fillRect(0, 0, DESIGN_WIDTH, DESIGN_HEIGHT)
 
   if (fontTest) {
