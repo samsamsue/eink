@@ -15,7 +15,6 @@ const FONT_FAMILY = 'sans-serif'
 const GRAPHICS_MONO_THRESHOLD = 104
 const HZK12_ASSET_KEY = 'server:fonts/HZK12'
 const HZK16_ASSET_KEY = 'server:fonts/HZK16'
-const GB2312_MAP_ASSET_KEY = 'server:fonts/gb2312.txt'
 const GB2312_OFFSETS_ASSET_KEY = 'server:fonts/gb2312-offsets.json'
 
 const s = (value: number) => Math.round(value * RENDER_SCALE)
@@ -86,6 +85,22 @@ const readTextAsset = async (key: string) => {
   return new TextDecoder('utf-8').decode(buffer)
 }
 
+const readJsonAsset = async <T>(key: string): Promise<T> => {
+  const parsed = await useStorage('/assets').getItem(key)
+
+  if (parsed && typeof parsed === 'object') {
+    return parsed as T
+  }
+
+  const text = (await readTextAsset(key)).trim()
+
+  if (!text) {
+    throw new Error(`Empty JSON asset: ${key}`)
+  }
+
+  return JSON.parse(text) as T
+}
+
 const loadFonts = async (): Promise<FontState> => {
   if (!fontStatePromise) {
     fontStatePromise = (async () => {
@@ -93,20 +108,17 @@ const loadFonts = async (): Promise<FontState> => {
       const fontPreset = FONT_PRESETS[activeFontPreset]
       const cjkFamily = `EinkCJK-${activeFontPreset}`
       const latinFamily = `EinkLatin-${activeFontPreset}`
-      const [cjkFontBytes, latinFontBytes, hzk12Bytes, hzk16Bytes, gb2312Map, gb2312Offsets] = await Promise.all([
+      const [cjkFontBytes, latinFontBytes, hzk12Bytes, hzk16Bytes, gb2312Offsets] = await Promise.all([
         readFontAsset(fontPreset.cjk),
         readFontAsset(fontPreset.latin),
         readFontAsset(HZK12_ASSET_KEY),
         readFontAsset(HZK16_ASSET_KEY),
-        readTextAsset(GB2312_MAP_ASSET_KEY),
-        readTextAsset(GB2312_OFFSETS_ASSET_KEY),
+        readJsonAsset<Record<string, number>>(GB2312_OFFSETS_ASSET_KEY),
       ])
       const fontCacheDir = await getFontCacheDir()
       const cjkFontPath = join(fontCacheDir, 'cjk-font.otf')
       const latinFontPath = join(fontCacheDir, 'latin-font.otf')
-      const charIndex = new Map<string, number>(Object.entries(JSON.parse(gb2312Offsets) as Record<string, number>))
-
-      void gb2312Map
+      const charIndex = new Map<string, number>(Object.entries(gb2312Offsets))
 
       await Promise.all([
         writeFile(cjkFontPath, cjkFontBytes),
