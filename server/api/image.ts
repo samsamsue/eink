@@ -2,10 +2,10 @@
 /// <reference path="../../types/opentype-js.d.ts" />
 import type { CanvasRenderingContext2D } from 'canvas'
 import type { ServerResponse } from 'http'
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import opentype from 'opentype.js'
 import { Solar } from 'lunar-javascript'
-import { cjkFontBase64 } from '../assets/generated/cjk-font'
-import { latinFontBase64 } from '../assets/generated/latin-font'
 
 const DESIGN_WIDTH = 800
 const DESIGN_HEIGHT = 600
@@ -13,29 +13,76 @@ const SCALE = 0.5
 const WIDTH = DESIGN_WIDTH * SCALE
 const HEIGHT = DESIGN_HEIGHT * SCALE
 const FONT_FAMILY = 'sans-serif'
+const CJK_FONT_NAME = 'DroidSansFallbackFull.ttf'
+const LATIN_FONT_NAME = 'DejaVuSans-Bold.ttf'
 
 const parseFontBuffer = (buffer: Uint8Array) => opentype.parse(buffer.buffer.slice(
   buffer.byteOffset,
   buffer.byteOffset + buffer.byteLength,
 ))
 
-const cjkFontBytes = Buffer.from(cjkFontBase64, 'base64')
-const latinFontBytes = Buffer.from(latinFontBase64, 'base64')
-const cjkPathFont = parseFontBuffer(cjkFontBytes)
-const latinPathFont = parseFontBuffer(latinFontBytes)
-const fontLoadSource = 'base64-module'
+type PathFont = ReturnType<typeof opentype.parse>
 
-const getFontDebug = () => ({
-  source: fontLoadSource,
-  cjkBytes: cjkFontBytes.byteLength,
-  latinBytes: latinFontBytes.byteLength,
-  cjkLoaded: Boolean(cjkPathFont),
-  latinLoaded: Boolean(latinPathFont),
-  cjkProbeWidth: cjkPathFont?.getAdvanceWidth('测试中文', 40) || 0,
-  latinProbeWidth: latinPathFont?.getAdvanceWidth('ABC123', 40) || 0,
-  cjkProbePathCommands: cjkPathFont?.getPath('测', 0, 40, 40).commands.length || 0,
-  latinProbePathCommands: latinPathFont?.getPath('A', 0, 40, 40).commands.length || 0,
-})
+type LoadedFont = {
+  bytes: Uint8Array
+  font: PathFont
+}
+
+type FontState = {
+  cjk: LoadedFont
+  latin: LoadedFont
+  source: string
+}
+
+let fontStatePromise: Promise<FontState> | null = null
+
+const readFirstAvailableFile = async (candidates: string[]) => {
+  let lastError: unknown = null
+
+  for (const candidate of candidates) {
+    try {
+      return await readFile(candidate)
+    } catch (error) {
+      lastError = error
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error('Failed to read font file')
+}
+
+const getFontCandidates = (fileName: string) => [
+  join(process.cwd(), 'public', 'fonts', fileName),
+  join(process.cwd(), '.output', 'public', 'fonts', fileName),
+  join(process.cwd(), 'server', 'assets', 'fonts', fileName),
+]
+
+const loadFonts = async (): Promise<FontState> => {
+  if (!fontStatePromise) {
+    fontStatePromise = (async () => {
+      const [cjkBytes, latinBytes] = await Promise.all([
+        readFirstAvailableFile(getFontCandidates(CJK_FONT_NAME)),
+        readFirstAvailableFile(getFontCandidates(LATIN_FONT_NAME)),
+      ])
+
+      return {
+        cjk: {
+          bytes: cjkBytes,
+          font: parseFontBuffer(cjkBytes),
+        },
+        latin: {
+          bytes: latinBytes,
+          font: parseFontBuffer(latinBytes),
+        },
+        source: 'font-file',
+      }
+    })().catch((error) => {
+      fontStatePromise = null
+      throw error
+    })
+  }
+
+  return fontStatePromise
+}
 
 let canvasModulePromise: Promise<typeof import('canvas')> | null = null
 
@@ -599,22 +646,72 @@ const getFontSize = (ctx: CanvasRenderingContext2D) => (
 )
 
 const shouldDrawWithPath = (char: string) => /[\p{Script=Han}，。、：；！？（）《》“”‘’]/u.test(char)
-const getTextFont = (char: string) => (
-  shouldDrawWithPath(char) ? cjkPathFont : latinPathFont
+const getTextFont = (fonts: FontState, char: string) => (
+  shouldDrawWithPath(char) ? fonts.cjk.font : fonts.latin.font
 )
 
+const getGlyphAdvanceWidth = (
+  font: PathFont,
+  char: string,
+  size: number,
+) => {
+  const glyph = font.charToGlyph(char)
+
+  return (glyph.advanceWidth || 0) * (size / font.unitsPerEm)
+}
+
+const getGlyphPath = (
+  font: PathFont,
+  char: string,
+  x: number,
+  y: number,
+  size: number,
+) => {
+  const glyph = font.charToGlyph(char)
+
+  return glyph.getPath(x, y, size, {}, font)
+}
+
+const getGlyphPathCommandCount = (
+  font: PathFont,
+  char: string,
+  size: number,
+) => getGlyphPath(font, char, 0, size, size).commands.length
+
+const getFontDebug = async () => {
+  const fonts = await loadFonts()
+
+  return {
+    source: fonts.source,
+    cjkBytes: fonts.cjk.bytes.byteLength,
+    latinBytes: fonts.latin.bytes.byteLength,
+    cjkLoaded: Boolean(fonts.cjk.font),
+    latinLoaded: Boolean(fonts.latin.font),
+    cjkProbeWidth: Array.from('测试中文').reduce((total, char) => (
+      total + getGlyphAdvanceWidth(fonts.cjk.font, char, 40)
+    ), 0),
+    latinProbeWidth: Array.from('ABC123').reduce((total, char) => (
+      total + getGlyphAdvanceWidth(fonts.latin.font, char, 40)
+    ), 0),
+    cjkProbePathCommands: getGlyphPathCommandCount(fonts.cjk.font, '测', 40),
+    latinProbePathCommands: getGlyphPathCommandCount(fonts.latin.font, 'A', 40),
+  }
+}
+
 const measureDisplayText = (
+  fonts: FontState,
   ctx: CanvasRenderingContext2D,
   text: string,
 ) => {
   const size = getFontSize(ctx)
 
   return Array.from(text).reduce((width, char) => (
-    width + (getTextFont(char)?.getAdvanceWidth(char, size) || ctx.measureText(char).width)
+    width + (getGlyphAdvanceWidth(getTextFont(fonts, char), char, size) || ctx.measureText(char).width)
   ), 0)
 }
 
 const drawBoldText = (
+  fonts: FontState,
   ctx: CanvasRenderingContext2D,
   text: string,
   x: number,
@@ -622,7 +719,7 @@ const drawBoldText = (
   _strokeWidth = 0,
 ) => {
   const size = getFontSize(ctx)
-  const measuredWidth = measureDisplayText(ctx, text)
+  const measuredWidth = measureDisplayText(fonts, ctx, text)
   const drawX = ctx.textAlign === 'right'
     ? x - measuredWidth
     : ctx.textAlign === 'center'
@@ -635,14 +732,14 @@ const drawBoldText = (
   ctx.textAlign = 'left'
 
   for (const char of Array.from(text)) {
-    const font = getTextFont(char)
+    const font = getTextFont(fonts, char)
 
     if (font) {
-      const path = font.getPath(char, cursorX, drawY, size)
+      const path = getGlyphPath(font, char, cursorX, drawY, size)
 
       path.fill = String(ctx.fillStyle)
       path.draw(ctx)
-      cursorX += font.getAdvanceWidth(char, size)
+      cursorX += getGlyphAdvanceWidth(font, char, size)
     } else {
       ctx.fillText(char, cursorX, y)
       cursorX += ctx.measureText(char).width
@@ -653,11 +750,12 @@ const drawBoldText = (
 }
 
 const ellipsizeText = (
+  fonts: FontState,
   ctx: CanvasRenderingContext2D,
   text: string,
   maxWidth: number,
 ) => {
-  const measureText = (value: string) => measureDisplayText(ctx, value)
+  const measureText = (value: string) => measureDisplayText(fonts, ctx, value)
 
   if (measureText(text) <= maxWidth) {
     return text
@@ -714,6 +812,7 @@ const drawWeatherIcon = async (
 }
 
 const drawAlmanac = (
+  fonts: FontState,
   ctx: CanvasRenderingContext2D,
   almanac: AlmanacPayload,
 ) => {
@@ -732,8 +831,8 @@ const drawAlmanac = (
   ctx.textAlign = 'left'
   ctx.textBaseline = 'middle'
   setFont(ctx, 24, 'bold')
-  drawBoldText(ctx, ellipsizeText(ctx, `宜：${almanac.yi.join('、')}`, 262), 260, 48)
-  drawBoldText(ctx, ellipsizeText(ctx, `忌：${almanac.ji.join('、')}`, 262), 260, 83)
+  drawBoldText(fonts, ctx, ellipsizeText(fonts, ctx, `宜：${almanac.yi.join('、')}`, 262), 260, 48)
+  drawBoldText(fonts, ctx, ellipsizeText(fonts, ctx, `忌：${almanac.ji.join('、')}`, 262), 260, 83)
 
   ctx.restore()
 }
@@ -762,6 +861,7 @@ const drawMessageIcon = (ctx: CanvasRenderingContext2D, x: number, y: number) =>
 }
 
 const drawHotItem = (
+  fonts: FontState,
   ctx: CanvasRenderingContext2D,
   centerY: number,
   tag: string,
@@ -775,13 +875,13 @@ const drawHotItem = (
   setFont(ctx, 27, 'bold')
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  drawBoldText(ctx, tag, 44.5, centerY)
+  drawBoldText(fonts, ctx, tag, 44.5, centerY)
 
   ctx.fillStyle = '#000'
   setFont(ctx, 30, 'bold')
   ctx.textAlign = 'left'
   ctx.textBaseline = 'middle'
-  drawBoldText(ctx, title, 77, centerY)
+  drawBoldText(fonts, ctx, title, 77, centerY)
 }
 
 export default defineEventHandler(async (event) => {
@@ -819,12 +919,13 @@ export default defineEventHandler(async (event) => {
     fetchHotList(),
     fetchTodoTip(),
   ])
+  const fonts = await loadFonts()
   const { createCanvas } = await getCanvasModule()
 
   if (debug) {
     return {
       completed: true,
-      font: getFontDebug(),
+      font: await getFontDebug(),
     }
   }
 
@@ -845,9 +946,9 @@ export default defineEventHandler(async (event) => {
     ctx.textAlign = 'left'
     ctx.textBaseline = 'alphabetic'
     setFont(ctx, 64, 'bold')
-    drawBoldText(ctx, '中文测试 ABC123 Debian 25°C', 30, 120)
+    drawBoldText(fonts, ctx, '中文测试 ABC123 Debian 25°C', 30, 120)
     setFont(ctx, 42, 'bold')
-    drawBoldText(ctx, `font: ${getFontDebug().source}`, 30, 200)
+    drawBoldText(fonts, ctx, `font: ${(await getFontDebug()).source}`, 30, 200)
 
     const buffer = canvas.toBuffer('image/png')
     const res = event.node.res as ServerResponse
@@ -864,17 +965,17 @@ export default defineEventHandler(async (event) => {
   ctx.textBaseline = 'alphabetic'
   ctx.textAlign = 'left'
   setFont(ctx, 42, 'bold')
-  drawBoldText(ctx, `${weather.temperature}°C`, 128, 58)
+  drawBoldText(fonts, ctx, `${weather.temperature}°C`, 128, 58)
   setFont(ctx, 33, 'bold')
-  drawBoldText(ctx, weather.text, 128, 99)
+  drawBoldText(fonts, ctx, weather.text, 128, 99)
 
-  drawAlmanac(ctx, almanac)
+  drawAlmanac(fonts, ctx, almanac)
 
   ctx.textAlign = 'right'
   setFont(ctx, 37, 'bold')
-  drawBoldText(ctx, realtimeDate.date, 780, 56)
+  drawBoldText(fonts, ctx, realtimeDate.date, 780, 56)
   setFont(ctx, 31, 'bold')
-  drawBoldText(ctx, `${realtimeDate.weekday}  ${realtimeDate.lunar}`, 781, 98)
+  drawBoldText(fonts, ctx, `${realtimeDate.weekday}  ${realtimeDate.lunar}`, 781, 98)
 
   ctx.strokeStyle = '#000'
   ctx.lineWidth = 2
@@ -886,7 +987,7 @@ export default defineEventHandler(async (event) => {
   // News list.
   ctx.textAlign = 'left'
   hotList.forEach((item, index) => {
-    drawHotItem(ctx, 178 + index * 56, item.tag, item.title)
+    drawHotItem(fonts, ctx, 178 + index * 56, item.tag, item.title)
   })
 
   // Footer.
@@ -900,7 +1001,7 @@ export default defineEventHandler(async (event) => {
   setFont(ctx, 42, 'bold')
   ctx.textAlign = 'left'
   ctx.textBaseline = 'middle'
-  drawBoldText(ctx, nextObservance, 16, 553)
+  drawBoldText(fonts, ctx, nextObservance, 16, 553)
 
   if (todoTip) {
     roundRect(ctx, 326, 521, 458, 63, 15)
@@ -912,7 +1013,7 @@ export default defineEventHandler(async (event) => {
     setFont(ctx, 31, 'bold')
     ctx.textAlign = 'left'
     ctx.textBaseline = 'middle'
-    drawBoldText(ctx, ellipsizeText(ctx, todoTip, 360), 405, 552.5)
+    drawBoldText(fonts, ctx, ellipsizeText(fonts, ctx, todoTip, 360), 405, 552.5)
   }
 
   const buffer = canvas.toBuffer('image/png')
@@ -924,7 +1025,7 @@ export default defineEventHandler(async (event) => {
     return {
       completed: true,
       pushed: !noPush,
-      font: getFontDebug(),
+      font: await getFontDebug(),
     }
   }
 
