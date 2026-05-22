@@ -806,13 +806,14 @@ const drawAlmanac = (
 ) => {
   ctx.save()
 
-  ctx.strokeStyle = '#aaa'
+  ctx.strokeStyle = '#000'
   ctx.lineWidth = 2
+  ctx.setLineDash([6, 6])
   ctx.beginPath()
-  ctx.moveTo(238, 19)
-  ctx.lineTo(238, 103)
-  ctx.moveTo(540, 19)
-  ctx.lineTo(540, 103)
+  ctx.moveTo(246, 24)
+  ctx.lineTo(246, 103)
+  ctx.moveTo(520, 24)
+  ctx.lineTo(520, 103)
   ctx.stroke()
 
   ctx.fillStyle = '#000'
@@ -953,9 +954,9 @@ export default defineEventHandler(async (event) => {
   ctx.textBaseline = 'alphabetic'
   ctx.textAlign = 'left'
   setFont(ctx, 42, 'bold')
-  drawBoldText(fonts, ctx, `${weather.temperature}°C`, 128, 58)
+  drawBoldText(fonts, ctx, `${weather.temperature}°C`, 115, 58)
   setFont(ctx, 33, 'bold')
-  drawBoldText(fonts, ctx, weather.text, 128, 99)
+  drawBoldText(fonts, ctx, weather.text, 115, 99)
 
   drawAlmanac(fonts, ctx, almanac)
 
@@ -992,16 +993,43 @@ export default defineEventHandler(async (event) => {
   drawBoldText(fonts, ctx, nextObservance, 16, 553)
 
   if (todoTip) {
-    roundRect(ctx, 326, 521, 458, 63, 15)
+    const bubbleRight = 784
+    const bubbleY = 521
+    const bubbleHeight = 63
+    const bubbleRadius = 15
+    const bubbleMaxWidth = 458
+    const bubbleMinWidth = 170
+    const bubblePaddingLeft = 18
+    const bubblePaddingRight = 24
+    const iconWidth = 48
+    const iconGap = 13
+    const textMaxWidth = bubbleMaxWidth - bubblePaddingLeft - iconWidth - iconGap - bubblePaddingRight
+
+    ctx.fillStyle = '#000'
+    setFont(ctx, 31, 'bold')
+    const todoText = ellipsizeText(fonts, ctx, todoTip, textMaxWidth)
+    const todoTextWidth = measureDisplayText(fonts, ctx, todoText)
+    const bubbleWidth = Math.min(
+      bubbleMaxWidth,
+      Math.max(
+        bubbleMinWidth,
+        bubblePaddingLeft + iconWidth + iconGap + todoTextWidth + bubblePaddingRight,
+      ),
+    )
+    const bubbleX = bubbleRight - bubbleWidth
+    const iconX = bubbleX + bubblePaddingLeft
+    const textX = iconX + iconWidth + iconGap
+
+    roundRect(ctx, bubbleX, bubbleY, bubbleWidth, bubbleHeight, bubbleRadius)
     ctx.fill()
 
-    drawMessageIcon(ctx, 344, 529)
+    drawMessageIcon(ctx, iconX, 529)
 
     ctx.fillStyle = '#fff'
     setFont(ctx, 31, 'bold')
     ctx.textAlign = 'left'
     ctx.textBaseline = 'middle'
-    drawBoldText(fonts, ctx, ellipsizeText(fonts, ctx, todoTip, 360), 405, 552.5)
+    drawBoldText(fonts, ctx, todoText, textX, 552.5)
   }
 
   const buffer = canvas.toBuffer('image/png')
