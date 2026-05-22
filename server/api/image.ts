@@ -2,8 +2,6 @@
 /// <reference path="../../types/opentype-js.d.ts" />
 import type { CanvasRenderingContext2D } from 'canvas'
 import type { ServerResponse } from 'http'
-import { readFile } from 'node:fs/promises'
-import { join } from 'node:path'
 import opentype from 'opentype.js'
 import { Solar } from 'lunar-javascript'
 
@@ -13,8 +11,8 @@ const SCALE = 0.5
 const WIDTH = DESIGN_WIDTH * SCALE
 const HEIGHT = DESIGN_HEIGHT * SCALE
 const FONT_FAMILY = 'sans-serif'
-const CJK_FONT_NAME = 'DroidSansFallbackFull.ttf'
-const LATIN_FONT_NAME = 'DejaVuSans-Bold.ttf'
+const CJK_FONT_ASSET_KEY = 'server:fonts:DroidSansFallbackFull.ttf'
+const LATIN_FONT_ASSET_KEY = 'server:fonts:DejaVuSans-Bold.ttf'
 
 const parseFontBuffer = (buffer: Uint8Array) => opentype.parse(buffer.buffer.slice(
   buffer.byteOffset,
@@ -36,44 +34,34 @@ type FontState = {
 
 let fontStatePromise: Promise<FontState> | null = null
 
-const readFirstAvailableFile = async (candidates: string[]) => {
-  let lastError: unknown = null
+const readFontAsset = async (key: string) => {
+  const buffer = await useStorage('/assets').getItemRaw(key)
 
-  for (const candidate of candidates) {
-    try {
-      return await readFile(candidate)
-    } catch (error) {
-      lastError = error
-    }
+  if (!buffer) {
+    throw new Error(`Missing font asset: ${key}`)
   }
 
-  throw lastError instanceof Error ? lastError : new Error('Failed to read font file')
+  return buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer)
 }
-
-const getFontCandidates = (fileName: string) => [
-  join(process.cwd(), 'public', 'fonts', fileName),
-  join(process.cwd(), '.output', 'public', 'fonts', fileName),
-  join(process.cwd(), 'server', 'assets', 'fonts', fileName),
-]
 
 const loadFonts = async (): Promise<FontState> => {
   if (!fontStatePromise) {
     fontStatePromise = (async () => {
-      const [cjkBytes, latinBytes] = await Promise.all([
-        readFirstAvailableFile(getFontCandidates(CJK_FONT_NAME)),
-        readFirstAvailableFile(getFontCandidates(LATIN_FONT_NAME)),
+      const [cjkFontBytes, latinFontBytes] = await Promise.all([
+        readFontAsset(CJK_FONT_ASSET_KEY),
+        readFontAsset(LATIN_FONT_ASSET_KEY),
       ])
 
       return {
         cjk: {
-          bytes: cjkBytes,
-          font: parseFontBuffer(cjkBytes),
+          bytes: cjkFontBytes,
+          font: parseFontBuffer(cjkFontBytes),
         },
         latin: {
-          bytes: latinBytes,
-          font: parseFontBuffer(latinBytes),
+          bytes: latinFontBytes,
+          font: parseFontBuffer(latinFontBytes),
         },
-        source: 'font-file',
+        source: 'font-module',
       }
     })().catch((error) => {
       fontStatePromise = null
