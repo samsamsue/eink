@@ -3,7 +3,7 @@ import type { CanvasRenderingContext2D } from 'canvas'
 import type { ServerResponse } from 'http'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { extname, join } from 'node:path'
 import { Solar } from 'lunar-javascript'
 
 const DESIGN_WIDTH = 800
@@ -16,7 +16,12 @@ const GRAPHICS_MONO_THRESHOLD = 104
 const HZK12_ASSET_KEY = 'server:fonts/HZK12'
 const HZK16_ASSET_KEY = 'server:fonts/HZK16'
 const GB2312_OFFSETS_ASSET_KEY = 'server:fonts/gb2312-offsets.json'
-
+const ARK10_ZH_BDF_ASSET_KEY = 'server:fonts/ark-pixel-10px-monospaced-zh_cn.bdf'
+const ARK10_LATIN_BDF_ASSET_KEY = 'server:fonts/ark-pixel-10px-monospaced-latin.bdf'
+const ARK12_ZH_BDF_ASSET_KEY = 'server:fonts/ark-pixel-12px-monospaced-zh_cn.bdf'
+const ARK12_LATIN_BDF_ASSET_KEY = 'server:fonts/ark-pixel-12px-monospaced-latin.bdf'
+const ARK16_ZH_BDF_ASSET_KEY = 'server:fonts/ark-pixel-16px-monospaced-zh_cn.bdf'
+const ARK16_LATIN_BDF_ASSET_KEY = 'server:fonts/ark-pixel-16px-monospaced-latin.bdf'
 const s = (value: number) => Math.round(value * RENDER_SCALE)
 const snap = (value: number) => Math.round(value)
 
@@ -26,17 +31,37 @@ type LoadedFont = {
   path: string
 }
 
+type BdfGlyph = {
+  dwidth: number
+  bbxWidth: number
+  bbxHeight: number
+  bbxOffsetX: number
+  bbxOffsetY: number
+  rowBytes: number
+  bytes: Uint8Array
+}
+
+type GlyphMetrics = {
+  advance: number
+  leftTrim: number
+}
+
+type GlyphSpacingMode = 'default' | 'tight' | 'ultraTight'
+
 type BitmapFont = {
   width: number
   height: number
   ascent: number
   baselineOffset: number
   rowBytes: number
-  bytes: Uint8Array
+  bytes?: Uint8Array
+  glyphs?: Map<string, BdfGlyph>
+  glyphCache?: Map<string, Uint8Array>
 }
 
 type BitmapFontState = {
   charIndex: Map<string, number>
+  font10: BitmapFont
   font12: BitmapFont
   font16: BitmapFont
 }
@@ -54,8 +79,16 @@ let fontStatePromise: Promise<FontState> | null = null
 
 const FONT_PRESETS = {
   noto: {
-    cjk: 'server:fonts:NotoSansCJKSC-Regular.otf',
-    latin: 'server:fonts:NotoSansCJKSC-Regular.otf',
+    cjk: 'server:fonts/ark-pixel-12px-monospaced-zh_cn.ttf',
+    latin: 'server:fonts/ark-pixel-12px-monospaced-latin.ttf',
+  },
+  ark12: {
+    cjk: 'server:fonts/ark-pixel-12px-monospaced-zh_cn.ttf',
+    latin: 'server:fonts/ark-pixel-12px-monospaced-latin.ttf',
+  },
+  wqySharp: {
+    cjk: 'server:fonts:wqy-zenhei-system.ttc',
+    latin: 'server:fonts:wqy-zenhei-system.ttc',
   },
   mplus12: {
     cjk: 'server:fonts:mplus_hzk_12.ttf',
@@ -101,24 +134,169 @@ const readJsonAsset = async <T>(key: string): Promise<T> => {
   return JSON.parse(text) as T
 }
 
+const parseBdfGlyphs = (text: string) => {
+  const glyphs = new Map<string, BdfGlyph>()
+  const lines = text.split(/\r?\n/)
+
+  let encoding: number | null = null
+  let dwidth = 0
+  let bbxWidth = 0
+  let bbxHeight = 0
+  let bbxOffsetX = 0
+  let bbxOffsetY = 0
+  let bitmapRows: string[] = []
+  let inBitmap = false
+
+  const flushGlyph = () => {
+    if (encoding == null || encoding < 0 || bbxWidth <= 0 || bbxHeight <= 0) {
+      encoding = null
+      dwidth = 0
+      bbxWidth = 0
+      bbxHeight = 0
+      bbxOffsetX = 0
+      bbxOffsetY = 0
+      bitmapRows = []
+      inBitmap = false
+      return
+    }
+
+    const rowBytes = Math.max(1, Math.ceil(bbxWidth / 8))
+    const bytes = new Uint8Array(rowBytes * bbxHeight)
+
+    for (let row = 0; row < Math.min(bitmapRows.length, bbxHeight); row++) {
+      const hex = bitmapRows[row].trim().padStart(rowBytes * 2, '0')
+
+      for (let byteIndex = 0; byteIndex < rowBytes; byteIndex++) {
+        const value = Number.parseInt(hex.slice(byteIndex * 2, byteIndex * 2 + 2), 16)
+        bytes[row * rowBytes + byteIndex] = Number.isFinite(value) ? value : 0
+      }
+    }
+
+    glyphs.set(String.fromCodePoint(encoding), {
+      dwidth,
+      bbxWidth,
+      bbxHeight,
+      bbxOffsetX,
+      bbxOffsetY,
+      rowBytes,
+      bytes,
+    })
+
+    encoding = null
+    dwidth = 0
+    bbxWidth = 0
+    bbxHeight = 0
+    bbxOffsetX = 0
+    bbxOffsetY = 0
+    bitmapRows = []
+    inBitmap = false
+  }
+
+  for (const line of lines) {
+    if (line.startsWith('STARTCHAR ')) {
+      encoding = null
+      dwidth = 0
+      bbxWidth = 0
+      bbxHeight = 0
+      bbxOffsetX = 0
+      bbxOffsetY = 0
+      bitmapRows = []
+      inBitmap = false
+      continue
+    }
+
+    if (line === 'ENDCHAR') {
+      flushGlyph()
+      continue
+    }
+
+    if (line === 'BITMAP') {
+      inBitmap = true
+      continue
+    }
+
+    if (inBitmap) {
+      bitmapRows.push(line)
+      continue
+    }
+
+    if (line.startsWith('ENCODING ')) {
+      encoding = Number.parseInt(line.slice(9), 10)
+      continue
+    }
+
+    if (line.startsWith('DWIDTH ')) {
+      dwidth = Number.parseInt(line.slice(7).split(/\s+/)[0] || '0', 10) || 0
+      continue
+    }
+
+    if (line.startsWith('BBX ')) {
+      const [width, height, offsetX, offsetY] = line.slice(4).split(/\s+/).map((value) => Number.parseInt(value, 10) || 0)
+      bbxWidth = width
+      bbxHeight = height
+      bbxOffsetX = offsetX
+      bbxOffsetY = offsetY
+    }
+  }
+
+  return glyphs
+}
+
 const loadFonts = async (): Promise<FontState> => {
   if (!fontStatePromise) {
     fontStatePromise = (async () => {
       const { registerFont } = await getCanvasModule()
       const fontPreset = FONT_PRESETS[activeFontPreset]
+      const useArkBitmap = activeFontPreset === 'noto' || activeFontPreset === 'ark12'
       const cjkFamily = `EinkCJK-${activeFontPreset}`
       const latinFamily = `EinkLatin-${activeFontPreset}`
-      const [cjkFontBytes, latinFontBytes, hzk12Bytes, hzk16Bytes, gb2312Offsets] = await Promise.all([
+      const [
+        cjkFontBytes,
+        latinFontBytes,
+        hzk12Bytes,
+        hzk16Bytes,
+        gb2312Offsets,
+        ark10ZhBdfText,
+        ark10LatinBdfText,
+        ark12ZhBdfText,
+        ark12LatinBdfText,
+        ark16ZhBdfText,
+        ark16LatinBdfText,
+      ] = await Promise.all([
         readFontAsset(fontPreset.cjk),
         readFontAsset(fontPreset.latin),
         readFontAsset(HZK12_ASSET_KEY),
         readFontAsset(HZK16_ASSET_KEY),
         readJsonAsset<Record<string, number>>(GB2312_OFFSETS_ASSET_KEY),
+        useArkBitmap ? readTextAsset(ARK10_ZH_BDF_ASSET_KEY) : Promise.resolve(null),
+        useArkBitmap ? readTextAsset(ARK10_LATIN_BDF_ASSET_KEY) : Promise.resolve(null),
+        useArkBitmap ? readTextAsset(ARK12_ZH_BDF_ASSET_KEY) : Promise.resolve(null),
+        useArkBitmap ? readTextAsset(ARK12_LATIN_BDF_ASSET_KEY) : Promise.resolve(null),
+        useArkBitmap ? readTextAsset(ARK16_ZH_BDF_ASSET_KEY) : Promise.resolve(null),
+        useArkBitmap ? readTextAsset(ARK16_LATIN_BDF_ASSET_KEY) : Promise.resolve(null),
       ])
       const fontCacheDir = await getFontCacheDir()
-      const cjkFontPath = join(fontCacheDir, 'cjk-font.otf')
-      const latinFontPath = join(fontCacheDir, 'latin-font.otf')
+      const cjkFontPath = join(fontCacheDir, `cjk-font${extname(fontPreset.cjk) || '.otf'}`)
+      const latinFontPath = join(fontCacheDir, `latin-font${extname(fontPreset.latin) || '.otf'}`)
       const charIndex = new Map<string, number>(Object.entries(gb2312Offsets))
+      const ark10Glyphs = useArkBitmap
+        ? new Map([
+          ...parseBdfGlyphs(ark10LatinBdfText || ''),
+          ...parseBdfGlyphs(ark10ZhBdfText || ''),
+        ])
+        : undefined
+      const ark12Glyphs = useArkBitmap
+        ? new Map([
+          ...parseBdfGlyphs(ark12LatinBdfText || ''),
+          ...parseBdfGlyphs(ark12ZhBdfText || ''),
+        ])
+        : undefined
+      const ark16Glyphs = useArkBitmap
+        ? new Map([
+          ...parseBdfGlyphs(ark16LatinBdfText || ''),
+          ...parseBdfGlyphs(ark16ZhBdfText || ''),
+        ])
+        : undefined
 
       await Promise.all([
         writeFile(cjkFontPath, cjkFontBytes),
@@ -131,13 +309,25 @@ const loadFonts = async (): Promise<FontState> => {
       return {
         bitmap: {
           charIndex,
+          font10: {
+            width: 10,
+            height: 10,
+            ascent: 8,
+            baselineOffset: 1,
+            rowBytes: 2,
+            bytes: useArkBitmap ? undefined : hzk12Bytes,
+            glyphs: ark10Glyphs,
+            glyphCache: useArkBitmap ? undefined : undefined,
+          },
           font12: {
             width: 12,
             height: 12,
             ascent: 10,
             baselineOffset: 1,
             rowBytes: 2,
-            bytes: hzk12Bytes,
+            bytes: useArkBitmap ? undefined : hzk12Bytes,
+            glyphs: ark12Glyphs,
+            glyphCache: useArkBitmap ? undefined : undefined,
           },
           font16: {
             width: 16,
@@ -145,7 +335,9 @@ const loadFonts = async (): Promise<FontState> => {
             ascent: 13,
             baselineOffset: 1,
             rowBytes: 2,
-            bytes: hzk16Bytes,
+            bytes: useArkBitmap ? undefined : hzk16Bytes,
+            glyphs: ark16Glyphs,
+            glyphCache: useArkBitmap ? undefined : undefined,
           },
         },
         cjk: {
@@ -160,7 +352,9 @@ const loadFonts = async (): Promise<FontState> => {
         },
         fontStack: `"${latinFamily}", "${cjkFamily}", ${FONT_FAMILY}`,
         preset: activeFontPreset,
-        source: 'canvas-registerFont',
+        source: useArkBitmap
+          ? 'canvas-registerFont+ark10/12/16-bdf-native'
+          : 'canvas-registerFont',
       }
     })().catch((error) => {
       fontStatePromise = null
@@ -172,9 +366,13 @@ const loadFonts = async (): Promise<FontState> => {
 }
 
 let canvasModulePromise: Promise<typeof import('canvas')> | null = null
+let loadedCanvasModule: typeof import('canvas') | null = null
 
 const getCanvasModule = async () => {
-  canvasModulePromise ||= import('canvas')
+  canvasModulePromise ||= import('canvas').then((module) => {
+    loadedCanvasModule = module
+    return module
+  })
   return canvasModulePromise
 }
 
@@ -467,8 +665,8 @@ const getRealtimeAlmanac = (now = new Date()): AlmanacPayload => {
     const lunar = Solar.fromYmd(date.year, date.month, date.day).getLunar()
 
     return {
-      yi: lunar.getDayYi().slice(0, 3),
-      ji: lunar.getDayJi().slice(0, 3),
+      yi: lunar.getDayYi().slice(0, 5),
+      ji: lunar.getDayJi().slice(0, 5),
     }
   } catch {
     return defaultAlmanac
@@ -630,8 +828,8 @@ const fetchHotList = async (): Promise<HotItem[]> => {
         title: item.word || '',
       }))
 
-    const topFixed = normalizedList.slice(0, 5)
-    const remaining = normalizedList.slice(5)
+    const topFixed = normalizedList.slice(0, 8)
+    const remaining = normalizedList.slice(8)
 
     for (let index = remaining.length - 1; index > 0; index--) {
       const randomIndex = Math.floor(Math.random() * (index + 1))
@@ -640,7 +838,7 @@ const fetchHotList = async (): Promise<HotItem[]> => {
       remaining[randomIndex] = current
     }
 
-    const hotList = [...topFixed, ...remaining.slice(0, 3)]
+    const hotList = [...topFixed, ...remaining.slice(0, 8)].slice(0, 16)
 
     return hotList.length > 0 ? hotList : fallbackHotList
   } catch {
@@ -746,7 +944,8 @@ const setFont = (
   size: number,
   weight: number | 'bold' | 'normal' = 'bold',
 ) => {
-  ctx.font = `${weight} ${s(size)}px ${fonts.fontStack}`
+  const scale = ((ctx.canvas as unknown as { width: number }).width / WIDTH) || 1
+  ctx.font = `${weight} ${s(size) * scale}px ${fonts.fontStack}`
 }
 
 const getFontSize = (ctx: CanvasRenderingContext2D) => (
@@ -794,44 +993,153 @@ const toGb2312CompatibleChar = (char: string) => {
   return symbolMap[char] || char
 }
 
+const rasterizeBitmapGlyphSync = (
+  fonts: FontState,
+  char: string,
+  bitmapFont: BitmapFont,
+) => {
+  const bdfGlyph = bitmapFont.glyphs?.get(char)
+
+  if (bdfGlyph) {
+    return bdfGlyph.bytes
+  }
+
+  const cached = bitmapFont.glyphCache?.get(char)
+
+  if (cached) {
+    return cached
+  }
+
+  if (!loadedCanvasModule) {
+    throw new Error('Canvas module not loaded before glyph rasterization')
+  }
+
+  const { createCanvas } = loadedCanvasModule
+  const canvas = createCanvas(bitmapFont.width, bitmapFont.height)
+  const ctx = canvas.getContext('2d')
+  ctx.antialias = 'none'
+  ctx.imageSmoothingEnabled = false
+  ctx.clearRect(0, 0, bitmapFont.width, bitmapFont.height)
+  ctx.fillStyle = '#000'
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'alphabetic'
+  ctx.font = `normal ${bitmapFont.height}px ${fonts.fontStack}`
+  ctx.fillText(char, 0, bitmapFont.ascent)
+
+  const imageData = ctx.getImageData(0, 0, bitmapFont.width, bitmapFont.height)
+  const glyphBytes = new Uint8Array(bitmapFont.rowBytes * bitmapFont.height)
+
+  for (let row = 0; row < bitmapFont.height; row++) {
+    for (let col = 0; col < bitmapFont.width; col++) {
+      const pixelIndex = (row * bitmapFont.width + col) * 4
+      const alpha = imageData.data[pixelIndex + 3]
+
+      if (alpha < 96) {
+        continue
+      }
+
+      const byteIndex = row * bitmapFont.rowBytes + Math.floor(col / 8)
+      glyphBytes[byteIndex] |= 0x80 >> (col % 8)
+    }
+  }
+
+  bitmapFont.glyphCache?.set(char, glyphBytes)
+  return glyphBytes
+}
+
 const getBitmapGlyph = (
   fonts: FontState,
   char: string,
   size: number,
 ) => {
   const normalizedChar = toGb2312CompatibleChar(char)
-  const glyphIndex = fonts.bitmap.charIndex.get(normalizedChar)
+  const bitmapFont = size <= 10
+    ? fonts.bitmap.font10
+    : size <= 13
+      ? fonts.bitmap.font12
+      : fonts.bitmap.font16
 
-  if (glyphIndex == null) {
-    return null
+  if (bitmapFont.bytes) {
+    const glyphIndex = fonts.bitmap.charIndex.get(normalizedChar)
+
+    if (glyphIndex == null) {
+      return null
+    }
+
+    const glyphByteLength = bitmapFont.rowBytes * bitmapFont.height
+    const offset = glyphIndex * glyphByteLength
+
+    if (offset + glyphByteLength > bitmapFont.bytes.length) {
+      return null
+    }
+
+    return {
+      char: normalizedChar,
+      glyphIndex,
+      bitmapFont,
+      offset,
+    }
   }
 
-  const bitmapFont = size <= 13 ? fonts.bitmap.font12 : fonts.bitmap.font16
-  const glyphByteLength = bitmapFont.rowBytes * bitmapFont.height
-  const offset = glyphIndex * glyphByteLength
-
-  if (offset + glyphByteLength > bitmapFont.bytes.length) {
-    return null
+  if (bitmapFont.glyphs?.has(char)) {
+    return {
+      char,
+      bitmapFont,
+    }
   }
 
-  return {
-    char: normalizedChar,
-    glyphIndex,
-    bitmapFont,
-    offset,
+  if (bitmapFont.glyphs?.has(normalizedChar)) {
+    return {
+      char: normalizedChar,
+      bitmapFont,
+    }
   }
+
+  return null
+}
+
+const getBitmapGlyphBytes = (
+  fonts: FontState,
+  glyph: NonNullable<ReturnType<typeof getBitmapGlyph>>,
+) => {
+  const { bitmapFont } = glyph
+
+  if (bitmapFont.bytes && 'offset' in glyph && typeof glyph.offset === 'number') {
+    const glyphByteLength = bitmapFont.rowBytes * bitmapFont.height
+    return bitmapFont.bytes.subarray(glyph.offset, glyph.offset + glyphByteLength)
+  }
+
+  return rasterizeBitmapGlyphSync(fonts, glyph.char, bitmapFont)
 }
 
 const getBitmapGlyphAdvance = (
+  fonts: FontState,
   glyph: NonNullable<ReturnType<typeof getBitmapGlyph>>,
-) => {
-  const { bitmapFont, offset } = glyph
+  spacingMode: GlyphSpacingMode = 'default',
+): GlyphMetrics => {
+  const { bitmapFont } = glyph
+  const bdfGlyph = bitmapFont.glyphs?.get(glyph.char)
+
+  if (bdfGlyph) {
+    const spacing = spacingMode === 'ultraTight'
+      ? -2
+      : spacingMode === 'tight'
+        ? 0
+        : bitmapFont.width <= 10 ? 0 : 1
+
+    return {
+      advance: Math.max(1, (bdfGlyph.dwidth || bdfGlyph.bbxWidth) + spacing),
+      leftTrim: Math.max(0, -bdfGlyph.bbxOffsetX),
+    }
+  }
+
+  const glyphBytes = getBitmapGlyphBytes(fonts, glyph)
   let leftmostPixel = bitmapFont.width
   let rightmostPixel = -1
 
   for (let row = 0; row < bitmapFont.height; row++) {
     for (let byteIndex = 0; byteIndex < bitmapFont.rowBytes; byteIndex++) {
-      const value = bitmapFont.bytes[offset + row * bitmapFont.rowBytes + byteIndex]
+      const value = glyphBytes[row * bitmapFont.rowBytes + byteIndex]
 
       if (value === 0) {
         continue
@@ -870,11 +1178,12 @@ const measureMixedText = (
   ctx: CanvasRenderingContext2D,
   text: string,
   size: number,
+  spacingMode: GlyphSpacingMode = 'default',
 ) => Array.from(text).reduce((width, char) => {
   const glyph = getBitmapGlyph(fonts, char, size)
 
   if (glyph) {
-    return width + getBitmapGlyphAdvance(glyph).advance
+    return width + getBitmapGlyphAdvance(fonts, glyph, spacingMode).advance
   }
 
   return width + ctx.measureText(char).width
@@ -887,8 +1196,9 @@ const drawBitmapText = (
   x: number,
   y: number,
   size: number,
+  spacingMode: GlyphSpacingMode = 'default',
 ) => {
-  const measuredWidth = measureMixedText(fonts, ctx, text, size)
+  const measuredWidth = measureMixedText(fonts, ctx, text, size, spacingMode)
 
   const drawX = snap(ctx.textAlign === 'right'
     ? x - measuredWidth
@@ -914,24 +1224,36 @@ const drawBitmapText = (
       continue
     }
 
-    const { bitmapFont, offset } = glyph
-    const metrics = getBitmapGlyphAdvance(glyph)
-    const topY = originalTextBaseline === 'middle'
+    const { bitmapFont } = glyph
+    const bdfGlyph = bitmapFont.glyphs?.get(glyph.char)
+    const metrics = getBitmapGlyphAdvance(fonts, glyph, spacingMode)
+    const glyphBytes = getBitmapGlyphBytes(fonts, glyph)
+    const glyphWidth = bdfGlyph?.bbxWidth ?? bitmapFont.width
+    const glyphHeight = bdfGlyph?.bbxHeight ?? bitmapFont.height
+    const glyphRowBytes = bdfGlyph?.rowBytes ?? bitmapFont.rowBytes
+    const fontBoxTopY = originalTextBaseline === 'middle'
       ? snap(y - bitmapFont.height / 2 + bitmapFont.baselineOffset)
       : snap(y - bitmapFont.ascent + bitmapFont.baselineOffset)
+    const topY = bdfGlyph
+      ? snap(fontBoxTopY + bitmapFont.ascent - glyphHeight - bdfGlyph.bbxOffsetY)
+      : originalTextBaseline === 'middle'
+        ? snap(y - bitmapFont.height / 2 + bitmapFont.baselineOffset)
+        : snap(y - bitmapFont.ascent + bitmapFont.baselineOffset)
+    const leftX = bdfGlyph ? cursorX + Math.max(0, bdfGlyph.bbxOffsetX) : cursorX
 
-    for (let row = 0; row < bitmapFont.height; row++) {
-      for (let byteIndex = 0; byteIndex < bitmapFont.rowBytes; byteIndex++) {
-        const value = bitmapFont.bytes[offset + row * bitmapFont.rowBytes + byteIndex]
+    for (let row = 0; row < glyphHeight; row++) {
+      for (let byteIndex = 0; byteIndex < glyphRowBytes; byteIndex++) {
+        const value = glyphBytes[row * glyphRowBytes + byteIndex]
 
         for (let bit = 0; bit < 8; bit++) {
           if ((value & (0x80 >> bit)) === 0) {
             continue
           }
 
-          const px = cursorX + byteIndex * 8 + bit - metrics.leftTrim
+          const glyphPixelX = byteIndex * 8 + bit
+          const px = leftX + glyphPixelX - metrics.leftTrim
 
-          if (px < cursorX || px >= cursorX + bitmapFont.width) {
+          if (glyphPixelX >= glyphWidth || px < cursorX || px >= cursorX + Math.max(bitmapFont.width, metrics.advance, glyphWidth)) {
             continue
           }
 
@@ -965,10 +1287,14 @@ const getFontDebug = async () => {
 }
 
 const measureDisplayText = (
-  _fonts: FontState,
+  fonts: FontState,
   ctx: CanvasRenderingContext2D,
   text: string,
-) => ctx.measureText(text).width
+  spacingMode: GlyphSpacingMode = 'default',
+) => {
+  const size = getFontSize(ctx)
+  return measureMixedText(fonts, ctx, text, size, spacingMode)
+}
 
 const drawBoldText = (
   fonts: FontState,
@@ -977,13 +1303,14 @@ const drawBoldText = (
   x: number,
   y: number,
   _strokeWidth = 0,
+  spacingMode: GlyphSpacingMode = 'default',
 ) => {
   const size = getFontSize(ctx)
-  if (drawBitmapText(fonts, ctx, text, x, y, size)) {
+  if (drawBitmapText(fonts, ctx, text, x, y, size, spacingMode)) {
     return
   }
 
-  const measuredWidth = measureDisplayText(fonts, ctx, text)
+  const measuredWidth = measureDisplayText(fonts, ctx, text, spacingMode)
   const originalTextAlign = ctx.textAlign
   const originalTextBaseline = ctx.textBaseline
   const drawX = snap(ctx.textAlign === 'right'
@@ -1005,8 +1332,9 @@ const ellipsizeText = (
   ctx: CanvasRenderingContext2D,
   text: string,
   maxWidth: number,
+  spacingMode: GlyphSpacingMode = 'default',
 ) => {
-  const measureText = (value: string) => measureDisplayText(fonts, ctx, value)
+  const measureText = (value: string) => measureDisplayText(fonts, ctx, value, spacingMode)
 
   if (measureText(text) <= maxWidth) {
     return text
@@ -1019,6 +1347,34 @@ const ellipsizeText = (
   }
 
   return output ? `${output}...` : ''
+}
+
+const drawFittedAlmanacLine = (
+  fonts: FontState,
+  ctx: CanvasRenderingContext2D,
+  label: '宜' | '忌',
+  values: string[],
+  x: number,
+  y: number,
+  maxWidth: number,
+) => {
+  const fontSizes = [28, 26, 24]
+  const text = `${label}：${values.join('、')}`
+
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'middle'
+
+  for (const size of fontSizes) {
+    setFont(fonts, ctx, size, 'normal')
+
+    if (measureDisplayText(fonts, ctx, text, 'ultraTight') <= maxWidth) {
+      drawBoldText(fonts, ctx, text, x, y, 0, 'ultraTight')
+      return
+    }
+  }
+
+  setFont(fonts, ctx, fontSizes[fontSizes.length - 1], 'normal')
+  drawBoldText(fonts, ctx, ellipsizeText(fonts, ctx, text, maxWidth, 'ultraTight'), x, y, 0, 'ultraTight')
 }
 
 const roundRect = (
@@ -1059,7 +1415,7 @@ const drawWeatherIcon = async (
   ].join('')
   const image = await loadImage(`data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`)
 
-  ctx.drawImage(image, s(10), s(12), s(101), s(101))
+  ctx.drawImage(image, s(6), s(12), s(94), s(94))
 }
 
 const drawAlmanac = (
@@ -1070,15 +1426,14 @@ const drawAlmanac = (
   ctx.save()
 
   ctx.fillStyle = '#000'
-  ctx.fillRect(s(226), s(24), 1, s(103) - s(24) + 1)
+  ctx.fillRect(s(200), s(24), 1, s(103) - s(24) + 1)
   ctx.fillRect(s(550), s(24), 1, s(103) - s(24) + 1)
 
   ctx.fillStyle = '#000'
   ctx.textAlign = 'left'
   ctx.textBaseline = 'middle'
-  setFont(fonts, ctx, 26, 'normal')
-  drawBoldText(fonts, ctx, ellipsizeText(fonts, ctx, `宜：${almanac.yi.join('、')}`, s(302)), s(240), s(48))
-  drawBoldText(fonts, ctx, ellipsizeText(fonts, ctx, `忌：${almanac.ji.join('、')}`, s(302)), s(240), s(83))
+  drawFittedAlmanacLine(fonts, ctx, '宜', almanac.yi, s(215), s(48), s(324))
+  drawFittedAlmanacLine(fonts, ctx, '忌', almanac.ji, s(215), s(83), s(324))
 
   ctx.restore()
 }
@@ -1106,28 +1461,14 @@ const drawMessageIcon = (ctx: CanvasRenderingContext2D, x: number, y: number) =>
   ctx.restore()
 }
 
-const drawHotItem = (
-  fonts: FontState,
+const drawHotItemBadge = (
   ctx: CanvasRenderingContext2D,
+  x: number,
   centerY: number,
-  tag: string,
-  title: string,
 ) => {
   ctx.fillStyle = '#000'
-  roundRect(ctx, s(24), centerY - s(20), s(40), s(40), s(10))
+  roundRect(ctx, x, centerY - s(18), s(36), s(36), s(9))
   ctx.fill()
-
-  ctx.fillStyle = '#fff'
-  setFont(fonts, ctx, 29, 'normal')
-  ctx.textAlign = 'center'
-  ctx.textBaseline = 'middle'
-  drawBoldText(fonts, ctx, tag, s(44), centerY)
-
-  ctx.fillStyle = '#000'
-  setFont(fonts, ctx, 32, 'normal')
-  ctx.textAlign = 'left'
-  ctx.textBaseline = 'middle'
-  drawBoldText(fonts, ctx, title, s(79), centerY)
 }
 
 const toMonochromeBuffer = async (
@@ -1275,53 +1616,64 @@ export default defineEventHandler(async (event) => {
   textCtx.fillStyle = '#000'
   textCtx.textBaseline = 'alphabetic'
   textCtx.textAlign = 'left'
-  setFont(fonts, textCtx, 32, 'normal')
-  drawBoldText(fonts, textCtx, `${weather.temperature}°C`, s(115), s(58))
-  setFont(fonts, textCtx, 33, 'normal')
-  drawBoldText(fonts, textCtx, weather.text, s(115), s(99))
+  setFont(fonts, textCtx, 28, 'normal')
+  drawBoldText(fonts, textCtx, `${weather.temperature}°C`, s(108), s(58))
+  setFont(fonts, textCtx, 28, 'normal')
+  drawBoldText(fonts, textCtx, weather.text, s(108), s(99))
 
   graphicsCtx.save()
   graphicsCtx.fillStyle = '#000'
-  graphicsCtx.fillRect(s(226), s(24), 1, s(103) - s(24) + 1)
-  graphicsCtx.fillRect(s(550), s(24), 1, s(103) - s(24) + 1)
+  graphicsCtx.fillRect(s(200), s(24), 1, s(103) - s(24) + 1)
+  graphicsCtx.fillRect(s(570), s(24), 1, s(103) - s(24) + 1)
   graphicsCtx.restore()
 
   textCtx.fillStyle = '#000'
   textCtx.textAlign = 'left'
   textCtx.textBaseline = 'middle'
-  setFont(fonts, textCtx, 26, 'normal')
-  drawBoldText(fonts, textCtx, ellipsizeText(fonts, textCtx, `宜：${almanac.yi.join('、')}`, s(302)), s(240), s(48))
-  drawBoldText(fonts, textCtx, ellipsizeText(fonts, textCtx, `忌：${almanac.ji.join('、')}`, s(302)), s(240), s(83))
+  drawFittedAlmanacLine(fonts, textCtx, '宜', almanac.yi, s(215), s(48), s(324))
+  drawFittedAlmanacLine(fonts, textCtx, '忌', almanac.ji, s(215), s(83), s(324))
 
   textCtx.textAlign = 'right'
-  setFont(fonts, textCtx, 34, 'normal')
-  drawBoldText(fonts, textCtx, realtimeDate.date, s(786), s(54))
-  setFont(fonts, textCtx, 27, 'normal')
+  setFont(fonts, textCtx, 28, 'normal')
+  drawBoldText(fonts, textCtx, realtimeDate.date, s(786), s(42))
+  setFont(fonts, textCtx, 24, 'normal')
   drawBoldText(fonts, textCtx, `${realtimeDate.weekday}  ${realtimeDate.lunar}`, s(787), s(86))
 
   graphicsCtx.fillStyle = '#000'
   graphicsCtx.fillRect(0, s(121), WIDTH, 1)
 
   // News list.
+  const newsTop = s(160)
+  const newsBottom = s(466)
+  const newsRows = 8
+  const newsRowGap = (newsBottom - newsTop) / (newsRows - 1)
+  const newsMarginX = s(16)
+  const newsColumnGap = s(12)
+  const newsColumnWidth = Math.floor((WIDTH - newsMarginX * 2 - newsColumnGap) / 2)
+  const newsBadgeWidth = s(36)
+  const newsTextGap = s(8)
   textCtx.textAlign = 'left'
-  hotList.forEach((item, index) => {
-    const centerY = s(156 + index * 44)
+  hotList.slice(0, newsRows * 2).forEach((item, index) => {
+    const column = index % 2
+    const row = Math.floor(index / 2)
+    const itemX = newsMarginX + column * (newsColumnWidth + newsColumnGap)
+    const centerY = snap(newsTop + row * newsRowGap)
+    const titleX = itemX + newsBadgeWidth + newsTextGap
+    const titleMaxWidth = newsColumnWidth - newsBadgeWidth - newsTextGap
 
-    graphicsCtx.fillStyle = '#000'
-    roundRect(graphicsCtx, s(24), centerY - s(20), s(40), s(40), s(10))
-    graphicsCtx.fill()
+    drawHotItemBadge(graphicsCtx, itemX, centerY)
 
     textCtx.fillStyle = '#fff'
-    setFont(fonts, textCtx, 29, 'normal')
+    setFont(fonts, textCtx, 26, 'normal')
     textCtx.textAlign = 'center'
     textCtx.textBaseline = 'middle'
-    drawBoldText(fonts, textCtx, item.tag, s(44), centerY)
+    drawBoldText(fonts, textCtx, item.tag, itemX + Math.floor(newsBadgeWidth / 2), centerY)
 
     textCtx.fillStyle = '#000'
-    setFont(fonts, textCtx, 32, 'normal')
+    setFont(fonts, textCtx, 26, 'normal')
     textCtx.textAlign = 'left'
     textCtx.textBaseline = 'middle'
-    drawBoldText(fonts, textCtx, item.title, s(79), centerY)
+    drawBoldText(fonts, textCtx, ellipsizeText(fonts, textCtx, item.title, titleMaxWidth), titleX, centerY, 0, 'tight')
   })
 
   // Footer.
@@ -1329,7 +1681,7 @@ export default defineEventHandler(async (event) => {
   graphicsCtx.fillRect(0, s(506), WIDTH, 1)
 
   textCtx.fillStyle = '#000'
-  setFont(fonts, textCtx, 42, 'normal')
+  setFont(fonts, textCtx, 28, 'normal')
   textCtx.textAlign = 'left'
   textCtx.textBaseline = 'middle'
   drawBoldText(fonts, textCtx, nextObservance, s(16), s(553))
@@ -1348,7 +1700,7 @@ export default defineEventHandler(async (event) => {
     const textMaxWidth = bubbleMaxWidth - bubblePaddingLeft - iconWidth - iconGap - bubblePaddingRight
 
     textCtx.fillStyle = '#000'
-    setFont(fonts, textCtx, 31, 'normal')
+    setFont(fonts, textCtx, 26, 'normal')
     const todoText = ellipsizeText(fonts, textCtx, todoTip, textMaxWidth)
     const todoTextWidth = measureDisplayText(fonts, textCtx, todoText)
     const bubbleWidth = Math.min(
@@ -1368,7 +1720,7 @@ export default defineEventHandler(async (event) => {
     drawMessageIcon(graphicsCtx, iconX, s(529))
 
     textCtx.fillStyle = '#fff'
-    setFont(fonts, textCtx, 31, 'normal')
+    setFont(fonts, textCtx, 26, 'normal')
     textCtx.textAlign = 'left'
     textCtx.textBaseline = 'middle'
     drawBoldText(fonts, textCtx, todoText, textX, s(552.5))
