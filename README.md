@@ -9,8 +9,8 @@
 用于生成墨水屏图片，并可直接推送到设备。
 
 热搜区域当前显示 8 条：
-- 前 5 条固定取微博热搜前 5
-- 后 3 条从剩余热搜里随机抽取
+- 前 3 条固定取微博热搜前 3
+- 后 5 条从剩余热搜里随机抽取
 
 ### 基本请求
 如果配置了 `PW`，请求时需要带上 `pw` 参数：
@@ -27,13 +27,9 @@
 - `preview`
   预览模式。传 `1`、`true`，或只写参数名都可以。
   开启后接口直接返回 PNG 图片，而不是 JSON。
-- `debug`
-  调试模式。传 `1`、`true`，或只写参数名都可以。
-  开启后返回字体加载状态等调试信息 JSON，不生成图片。
-- `fontTest`
-  字体测试模式。传 `1`、`true`，或只写参数名都可以。
-  开启后返回一张仅用于测试中英文字体渲染的 PNG。
-- 默认中文矢量字体当前使用 `SarasaGothicSC-Regular.ttf`（更纱黑体）。
+- 字体固定使用 `Unifont` 点阵字模。
+- `date`
+  日期预览参数，格式 `YYYY-MM-DD`。用于测试日期、星期、农历、节气/倒数日和宜忌显示。
 - `noPush`
   禁止推送到设备。传 `1`、`true`，或只写参数名都可以。
   开启后只生成图片或返回结果，不调用设备推送接口。
@@ -52,21 +48,12 @@
 ```json
 {
   "completed": true,
-  "pushed": true,
-  "font": {
-    "source": "font-module"
-  }
+  "pushed": true
 }
 ```
 
 - `preview=1`：
   返回 `image/png` 图片内容。
-
-- `debug=1`：
-  返回 JSON 调试信息。
-
-- `fontTest=1`：
-  返回字体测试用 `image/png`。
 
 - `noPush=1`：
   不推送设备；如果未开启 `preview`，仍返回 JSON。
@@ -91,8 +78,8 @@
 /api/image?pw=你的密码&location=shenzhen&preview=1&noPush=1
 ```
 
-查看调试信息：
+指定日期预览：
 
 ```text
-/api/image?pw=你的密码&debug=1
+/api/image?pw=你的密码&date=2026-02-04&preview=1&noPush=1
 ```
