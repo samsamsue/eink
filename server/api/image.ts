@@ -12,7 +12,7 @@ const WIDTH = 400
 const HEIGHT = 300
 const RENDER_SCALE = WIDTH / DESIGN_WIDTH
 const FONT_FAMILY = 'sans-serif'
-const GRAPHICS_MONO_THRESHOLD = 104
+const GRAPHICS_MONO_THRESHOLD = 50
 const UNIFONT_OTF_ASSET_KEY = 'server:fonts/unifont.otf'
 const UNIFONT_BDF_ASSET_KEY = 'server:fonts/unifont.bdf'
 const s = (value: number) => Math.round(value * RENDER_SCALE)
