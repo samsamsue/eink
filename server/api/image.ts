@@ -1268,23 +1268,25 @@ const drawWeatherIcon = async (
 
 const drawMessageIcon = (ctx: CanvasRenderingContext2D, x: number, y: number) => {
   ctx.save()
+  ctx.strokeStyle = '#fff'
   ctx.fillStyle = '#fff'
-  roundRect(ctx, x, y, s(48), s(36), s(5))
-  ctx.fill()
+  ctx.lineWidth = Math.max(2, s(4))
+  ctx.lineJoin = 'round'
+  ctx.lineCap = 'round'
 
   ctx.beginPath()
-  ctx.moveTo(x + s(17), y + s(34))
-  ctx.lineTo(x + s(10), y + s(48))
-  ctx.lineTo(x + s(28), y + s(36))
-  ctx.closePath()
-  ctx.fill()
+  roundRect(ctx, x + s(2), y + s(2), s(42), s(30), s(6))
+  ctx.stroke()
 
-  ctx.fillStyle = '#000'
-  for (let i = 0; i < 3; i++) {
-    ctx.beginPath()
-    ctx.arc(x + s(15 + i * 11), y + s(17), s(2.2), 0, Math.PI * 2)
-    ctx.fill()
-  }
+  ctx.beginPath()
+  ctx.moveTo(x + s(18), y + s(31))
+  ctx.lineTo(x + s(12), y + s(40))
+  ctx.lineTo(x + s(28), y + s(32))
+  ctx.stroke()
+
+  ctx.fillRect(x + s(13), y + s(16), s(4), s(4))
+  ctx.fillRect(x + s(23), y + s(16), s(4), s(4))
+  ctx.fillRect(x + s(33), y + s(16), s(4), s(4))
 
   ctx.restore()
 }
