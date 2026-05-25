@@ -1161,6 +1161,7 @@ const ellipsizeText = (
   text: string,
   maxWidth: number,
   spacingMode: GlyphSpacingMode = 'default',
+  marker = '...',
 ) => {
   const measureText = (value: string) => measureDisplayText(fonts, ctx, value, spacingMode)
 
@@ -1168,13 +1169,15 @@ const ellipsizeText = (
     return text
   }
 
-  let output = text
+  const chars = Array.from(text)
+  let output = chars.join('')
 
-  while (output.length > 0 && measureText(`${output}...`) > maxWidth) {
-    output = output.slice(0, -1)
+  while (chars.length > 0 && measureText(`${output}${marker}`) > maxWidth) {
+    chars.pop()
+    output = chars.join('')
   }
 
-  return output ? `${output}...` : ''
+  return output && measureText(`${output}${marker}`) <= maxWidth ? `${output}${marker}` : ''
 }
 
 const drawDistributedAlmanacLine = (
@@ -1502,7 +1505,7 @@ export default defineEventHandler(async (event) => {
     setFont(fonts, textCtx, newsFontSize, 'normal')
     textCtx.textAlign = 'left'
     textCtx.textBaseline = 'middle'
-    drawBoldText(fonts, textCtx, ellipsizeText(fonts, textCtx, item.title, titleMaxWidth), titleX, centerY, 0, 'tight')
+    drawBoldText(fonts, textCtx, ellipsizeText(fonts, textCtx, item.title, titleMaxWidth, 'tight', '…'), titleX, centerY, 0, 'tight')
   })
 
   // Right date panel.
