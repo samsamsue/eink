@@ -649,7 +649,7 @@ const getWeatherIconName = (code: string, text: string) => {
   const normalizedText = text.toLowerCase()
   const codeNumber = Number(code)
 
-  if (normalizedText.includes('雷') || codeNumber === 13 || codeNumber === 14 || codeNumber === 15) {
+  if (normalizedText.includes('雷') || codeNumber === 11 || codeNumber === 12) {
     return 'lightning'
   }
 
